@@ -125,7 +125,10 @@ async function analyzeExif(file) {
       confidence = 'very_low'
     }
 
-    const finalScore = Math.min(95, Math.max(3, Math.round(rawScore)))
+    const getFinalScore = () => {
+  if (!result) return 0
+  return computeFinalScore(result.combined, exifResult, result.dimensionScore, result.disagreementSpread)
+}
 
     return {
       aiScore: finalScore,
@@ -145,11 +148,25 @@ async function analyzeExif(file) {
 }
 
 // ── Compute final blended score with adaptive EXIF weight ──────────────────
-function computeFinalScore(modelCombined, exifData) {
-  if (!exifData) return modelCombined
-  const ew = exifData.exifWeight
-  const mw = 1 - ew
-  return Math.min(99, Math.max(1, Math.round(modelCombined * mw + exifData.aiScore * ew)))
+function computeFinalScore(modelCombined, exifData, dimensionScore, disagreementSpread) {
+  // Base model weight
+  let modelWeight = 1.0
+  let exifWeight = exifData?.exifWeight || 0
+  let dimWeight = 0
+
+  // Dimension score contribution — only when confidence is meaningful
+  if (dimensionScore && dimensionScore.confidence !== 'none' && dimensionScore.confidence !== 'low') {
+    dimWeight = dimensionScore.confidence === 'high' ? 0.15 : 0.08
+  }
+
+  // Adjust model weight down to make room
+  modelWeight = 1 - exifWeight - dimWeight
+
+  const modelScore = modelCombined * modelWeight
+  const exifScore = (exifData?.aiScore || 0) * exifWeight
+  const dimScore = (dimensionScore?.score || 0) * dimWeight
+
+  return Math.min(99, Math.max(1, Math.round(modelScore + exifScore + dimScore)))
 }
 
 const Logo = ({ size = 32 }) => (
@@ -517,24 +534,18 @@ export default function App() {
             </div>
 
             {/* EXIF preview — animated tag entries */}
-            {exifResult && !result && (
-              <div style={{ background: t.bg2, border: `1px solid ${accent}22`, borderRadius: '14px', padding: '1.2rem', marginBottom: '1rem', animation: 'slideUp 0.35s ease', boxShadow: dark ? 'none' : '0 2px 12px rgba(0,0,0,0.04)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                  <div style={{ fontSize: '0.7rem', color: accent, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em' }}>📋 Metadata analysis</div>
-                  <div style={{ fontSize: '0.7rem', color: t.muted }}>Evidence quality: <span style={{ color: exifResult.evidenceQuality >= 50 ? '#22c55e' : exifResult.evidenceQuality >= 25 ? '#eab308' : '#f87171', fontWeight: 600 }}>{exifResult.evidenceQuality >= 50 ? 'High' : exifResult.evidenceQuality >= 25 ? 'Medium' : 'Low'}</span></div>
-                </div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                  {exifResult.signals.map((s, i) => (
-                    <span key={i} style={{ fontSize: '0.75rem', padding: '5px 11px', borderRadius: '20px', background: s.suspicious ? (dark ? 'rgba(239,68,68,0.12)' : 'rgba(239,68,68,0.08)') : (dark ? 'rgba(34,197,94,0.12)' : 'rgba(34,197,94,0.08)'), color: s.suspicious ? '#ef4444' : '#16a34a', border: `1px solid ${s.suspicious ? 'rgba(239,68,68,0.25)' : 'rgba(34,197,94,0.25)'}`, fontWeight: 500, animation: `tagPop 0.3s ease ${i * 0.06}s both` }}>
-                      {s.suspicious ? '⚠ ' : '✓ '}{s.label}
-                    </span>
-                  ))}
-                </div>
-                <div style={{ marginTop: '10px', fontSize: '0.72rem', color: t.muted }}>
-                  EXIF contribution to final score: <span style={{ color: accent, fontWeight: 600 }}>{Math.round(exifResult.exifWeight * 100)}%</span> — {exifResult.confidence === 'high' ? 'definitive evidence found' : exifResult.confidence === 'medium' ? 'partial evidence' : 'low reliability evidence'}
-                </div>
-              </div>
-            )}
+            {result?.dimensionScore?.signals?.length > 0 && !result && (
+  <div style={{ background: t.bg2, border: `1px solid rgba(99,102,241,0.2)`, borderRadius: '14px', padding: '1.2rem', marginBottom: '1rem', animation: 'slideUp 0.3s ease' }}>
+    <div style={{ fontSize: '0.7rem', color: accent, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '10px' }}>📐 Dimension analysis</div>
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+      {result.dimensionScore.signals.map((s, i) => (
+        <span key={i} style={{ fontSize: '0.75rem', padding: '5px 11px', borderRadius: '20px', background: s.suspicious ? 'rgba(239,68,68,0.08)' : 'rgba(34,197,94,0.08)', color: s.suspicious ? '#ef4444' : '#16a34a', border: `1px solid ${s.suspicious ? 'rgba(239,68,68,0.22)' : 'rgba(34,197,94,0.22)'}`, fontWeight: 500 }}>
+          {s.suspicious ? '⚠ ' : '✓ '}{s.label}
+        </span>
+      ))}
+    </div>
+  </div>
+)}
 
             {/* Loading bar */}
             {isLoading && (
@@ -596,24 +607,24 @@ export default function App() {
                     </div>
                   ))}
 
-                  {exifResult && (
-                    <div style={{ marginTop: '1.2rem', paddingTop: '1.2rem', borderTop: `1px solid ${t.border}`, animation: 'slideRight 0.4s ease 0.35s both' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', marginBottom: '6px' }}>
-                        <span style={{ color: accent, fontWeight: 600 }}>📋 EXIF Metadata <span style={{ color: t.muted, fontWeight: 400, fontSize: '0.78rem' }}>({Math.round(exifResult.exifWeight * 100)}% weight)</span></span>
-                        <span style={{ color: exifResult.aiScore >= 50 ? '#ef4444' : '#16a34a', fontWeight: 700 }}>{exifResult.aiScore}%</span>
-                      </div>
-                      <div style={{ background: t.card, borderRadius: '6px', height: '8px', overflow: 'hidden', marginBottom: '1rem' }}>
-                        <div style={{ height: '100%', background: exifResult.aiScore >= 50 ? `linear-gradient(90deg, #ef4444, #f97316)` : `linear-gradient(90deg, #22c55e, #10b981)`, borderRadius: '6px', width: `${exifResult.aiScore}%`, transition: 'width 1.1s cubic-bezier(0.34, 1.2, 0.64, 1)', transitionDelay: '0.35s' }} />
-                      </div>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                        {exifResult.signals.map((s, i) => (
-                          <span key={i} style={{ fontSize: '0.75rem', padding: '5px 11px', borderRadius: '20px', background: s.suspicious ? (dark ? 'rgba(239,68,68,0.12)' : 'rgba(239,68,68,0.08)') : (dark ? 'rgba(34,197,94,0.12)' : 'rgba(34,197,94,0.08)'), color: s.suspicious ? '#ef4444' : '#16a34a', border: `1px solid ${s.suspicious ? 'rgba(239,68,68,0.25)' : 'rgba(34,197,94,0.25)'}`, fontWeight: 500, animation: `tagPop 0.25s ease ${0.4 + i * 0.05}s both` }}>
-                            {s.suspicious ? '⚠ ' : '✓ '}{s.label}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  )}
+                  {result?.dimensionScore?.signals?.length > 0 && (
+  <div style={{ marginTop: '1.2rem', paddingTop: '1.2rem', borderTop: `1px solid ${t.border}`, animation: 'slideRight 0.4s ease 0.5s both' }}>
+    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', marginBottom: '6px' }}>
+      <span style={{ color: '#14b8a6', fontWeight: 600 }}>📐 Dimension heuristics <span style={{ color: t.muted, fontWeight: 400, fontSize: '0.78rem' }}>({result.dimensionScore.confidence} confidence)</span></span>
+      <span style={{ color: result.dimensionScore.score >= 30 ? '#ef4444' : '#16a34a', fontWeight: 700 }}>{result.dimensionScore.score}%</span>
+    </div>
+    <div style={{ background: t.card, borderRadius: '6px', height: '8px', overflow: 'hidden', marginBottom: '1rem' }}>
+      <div style={{ height: '100%', background: result.dimensionScore.score >= 30 ? `linear-gradient(90deg, #ef4444, #f97316)` : `linear-gradient(90deg, #22c55e, #10b981)`, borderRadius: '6px', width: `${result.dimensionScore.score}%`, transition: 'width 1.1s cubic-bezier(0.34, 1.2, 0.64, 1)', transitionDelay: '0.5s' }} />
+    </div>
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+      {result.dimensionScore.signals.map((s, i) => (
+        <span key={i} style={{ fontSize: '0.75rem', padding: '5px 11px', borderRadius: '20px', background: s.suspicious ? 'rgba(239,68,68,0.08)' : 'rgba(34,197,94,0.08)', color: s.suspicious ? '#ef4444' : '#16a34a', border: `1px solid ${s.suspicious ? 'rgba(239,68,68,0.22)' : 'rgba(34,197,94,0.22)'}`, fontWeight: 500, animation: `tagPop 0.25s ease ${0.5 + i * 0.05}s both` }}>
+          {s.suspicious ? '⚠ ' : '✓ '}{s.label}
+        </span>
+      ))}
+    </div>
+  </div>
+)}
                 </div>
               </div>
             )}
