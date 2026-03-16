@@ -932,7 +932,7 @@ export default function App() {
             <Logo size={22} />
             <span style={{ fontWeight: 900, background: `linear-gradient(135deg, ${accent}, ${pink})`, WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', fontSize: '1rem' }}>IsItAI</span>
           </div>
-          <p style={{ color: t.muted, margin: 0, fontSize: '0.82rem' }}>Built with Next.js · Powered by Hugging Face · © 2025 IsItAI</p>
+          <p style={{ color: t.muted, margin: 0, fontSize: '0.82rem' }}>Built with Next.js  · © 2025 IsItAI</p>
         </footer>
       </div>
 
