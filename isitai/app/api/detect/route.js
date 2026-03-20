@@ -11,67 +11,81 @@ export async function POST(request) {
 
     const rawBuffer = Buffer.from(await image.arrayBuffer())
 
-    let processedBuffer
+    // Get dimensions ONLY — do NOT resize before sending to HF
+    // Critical fix: HF inference API handles all preprocessing internally.
+    // Pre-resizing with Sharp was causing result discrepancy vs HF playground.
     let imageDimensions = { width: 0, height: 0 }
+    let sendBuffer = rawBuffer
+    const mimeType = image.type || 'image/jpeg'
+
     try {
       const metadata = await sharp(rawBuffer).metadata()
       imageDimensions = { width: metadata.width || 0, height: metadata.height || 0 }
-      processedBuffer = await sharp(rawBuffer)
-        .resize(224, 224, { fit: 'cover', position: 'centre' })
-        .removeAlpha()
-        .jpeg({ quality: 95, chromaSubsampling: '4:4:4' })
-        .toBuffer()
+
+      // Only convert format if needed — no resize, no crop, no distortion
+      if (metadata.format && !['jpeg', 'jpg', 'png', 'webp'].includes(metadata.format)) {
+        sendBuffer = await sharp(rawBuffer).jpeg({ quality: 92 }).toBuffer()
+      }
     } catch (e) {
-      console.log('Sharp failed, using raw:', e.message)
-      processedBuffer = rawBuffer
+      sendBuffer = rawBuffer
     }
 
     const dimensionScore = analyzeDimensions(imageDimensions.width, imageDimensions.height)
 
-    // Feature 5: v2 model swapped in for umm-maybe
+    // Phase 1: Top 2 models only — sdxl-detector removed
+    // haywoodsloan: 60% weight — highest sensitivity on modern AI outputs
+    // umm-maybe: 40% weight — strong GAN + diverse generator coverage
     const models = [
-      { name: 'umm-maybe/AI-image-detector-v2', weight: 0.30, fallback: 'umm-maybe/AI-image-detector' },
-      { name: 'Organika/sdxl-detector', weight: 0.30 },
-      { name: 'haywoodsloan/ai-image-detector-deploy', weight: 0.40 },
+      { name: 'umm-maybe/AI-image-detector', weight: 0.40 },
+      { name: 'haywoodsloan/ai-image-detector-deploy', weight: 0.60 },
     ]
 
     const results = await Promise.allSettled(
       models.map(async (model) => {
-        // Try primary model, fall back to original if v2 fails
-        const tryModel = async (name) => {
-          const res = await fetch(
-            `https://router.huggingface.co/hf-inference/models/${name}`,
-            {
-              method: 'POST',
-              headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'image/jpeg' },
-              body: processedBuffer,
-            }
-          )
-          const text = await res.text()
-          console.log(`Model ${name}:`, text)
-          const data = JSON.parse(text)
-          if (data.error) throw new Error(data.error)
-          if (!Array.isArray(data)) throw new Error('Unexpected format')
-          return data
-        }
-
-        let data
-        try {
-          data = await tryModel(model.name)
-        } catch (e) {
-          if (model.fallback) {
-            console.log(`v2 failed, trying fallback: ${model.fallback}`)
-            data = await tryModel(model.fallback)
-          } else throw e
-        }
-
-        const aiEntry = data.find(d =>
-          d.label?.toLowerCase().includes('artificial') ||
-          d.label?.toLowerCase().includes('fake') ||
-          d.label?.toLowerCase().includes('ai')
+        const res = await fetch(
+          `https://router.huggingface.co/hf-inference/models/${model.name}`,
+          {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${key}`,
+              // Send as original mime type — HF handles its own normalization
+              'Content-Type': mimeType,
+            },
+            body: sendBuffer,
+          }
         )
-        if (!aiEntry) throw new Error('No AI label found')
-        return { name: model.name, weight: model.weight, aiScore: Math.round(aiEntry.score * 100) }
+
+        if (!res.ok) {
+          const errText = await res.text()
+          throw new Error(`HTTP ${res.status}: ${errText.slice(0, 120)}`)
+        }
+
+        const text = await res.text()
+        let data
+        try { data = JSON.parse(text) }
+        catch { throw new Error(`Non-JSON response: ${text.slice(0, 80)}`) }
+
+        if (data.error) throw new Error(data.error)
+        if (!Array.isArray(data)) throw new Error(`Unexpected response format`)
+
+        // Normalize label detection — handles both model label conventions
+        const aiEntry = data.find(d => {
+          const label = (d.label || '').toLowerCase()
+          return label.includes('artificial') ||
+                 label.includes('fake') ||
+                 label.includes('ai') ||
+                 label === 'ai-generated' ||
+                 label === 'generated'
+        })
+
+        if (!aiEntry) throw new Error(`No AI label in: ${data.map(d => d.label).join(', ')}`)
+        return {
+          name: model.name,
+          shortName: model.name.split('/')[1],
+          weight: model.weight,
+          aiScore: Math.round(aiEntry.score * 100),
+          rawLabels: data.map(d => ({ label: d.label, score: Math.round(d.score * 100) }))
+        }
       })
     )
 
@@ -79,44 +93,49 @@ export async function POST(request) {
     const failed = results.filter(r => r.status === 'rejected').map(r => r.reason?.message)
 
     if (successful.length === 0) {
-      return Response.json({ error: 'All models failed', details: failed }, { status: 500 })
+      return Response.json({
+        error: 'All models failed — they may be cold-starting',
+        details: failed
+      }, { status: 500 })
     }
 
+    // Disagreement-aware weighting
     const scores = successful.map(m => m.aiScore)
-    const maxScore = Math.max(...scores)
-    const minScore = Math.min(...scores)
-    const spread = maxScore - minScore
+    const spread = successful.length > 1 ? Math.max(...scores) - Math.min(...scores) : 0
     const disagreement = spread > 25
 
     let adjustedModels = [...successful]
-    if (disagreement && spread > 30) {
-      const haywood = adjustedModels.find(m => m.name.includes('haywoodsloan'))
-      if (haywood) {
-        const otherModels = adjustedModels.filter(m => !m.name.includes('haywoodsloan'))
-        const perOtherWeight = otherModels.length > 0 ? 0.30 / otherModels.length : 0
-        adjustedModels = adjustedModels.map(m => ({
-          ...m,
-          weight: m.name.includes('haywoodsloan') ? 0.70 : perOtherWeight,
-          weightAdjusted: m.name.includes('haywoodsloan')
-        }))
-      }
+
+    if (disagreement && spread > 35 && successful.length > 1) {
+      // Boost haywoodsloan when disagreement is strong — it has highest sensitivity
+      adjustedModels = adjustedModels.map(m => ({
+        ...m,
+        effectiveWeight: m.name.includes('haywoodsloan') ? 0.75 : 0.25,
+        weightAdjusted: m.name.includes('haywoodsloan'),
+      }))
+    } else {
+      adjustedModels = adjustedModels.map(m => ({ ...m, effectiveWeight: m.weight, weightAdjusted: false }))
     }
 
-    const totalWeight = adjustedModels.reduce((sum, m) => sum + m.weight, 0)
+    const totalWeight = adjustedModels.reduce((s, m) => s + m.effectiveWeight, 0)
     const modelCombined = Math.round(
-      adjustedModels.reduce((sum, m) => sum + (m.aiScore * (m.weight / totalWeight)), 0)
+      adjustedModels.reduce((s, m) => s + (m.aiScore * (m.effectiveWeight / totalWeight)), 0)
     )
 
+    // Confidence: lower when models disagree strongly
     const mean = modelCombined
-    const stdDev = Math.sqrt(scores.reduce((sum, s) => sum + Math.pow(s - mean, 2), 0) / scores.length)
-    const confidence = stdDev < 8 ? 'high' : stdDev < 20 ? 'medium' : 'low'
+    const variance = successful.reduce((s, m) => s + Math.pow(m.aiScore - mean, 2), 0) / successful.length
+    const stdDev = Math.sqrt(variance)
+    const confidence = stdDev < 8 ? 'high' : stdDev < 22 ? 'medium' : 'low'
 
     return Response.json({
       combined: modelCombined,
-      modelResults: successful.map(m => ({
-        ...m,
-        weight: adjustedModels.find(a => a.name === m.name)?.weight || m.weight,
-        weightAdjusted: adjustedModels.find(a => a.name === m.name)?.weightAdjusted || false
+      modelResults: adjustedModels.map(m => ({
+        name: m.name,
+        shortName: m.shortName,
+        weight: m.effectiveWeight,
+        weightAdjusted: m.weightAdjusted,
+        aiScore: m.aiScore,
       })),
       disagreement,
       disagreementSpread: spread,
@@ -124,10 +143,10 @@ export async function POST(request) {
       dimensionScore,
       imageDimensions,
       modelsUsed: successful.length,
-      failedModels: failed
+      failedModels: failed,
     })
+
   } catch (error) {
-    console.error('Route error:', error)
     return Response.json({ error: error.message }, { status: 500 })
   }
 }
@@ -138,53 +157,47 @@ function analyzeDimensions(width, height) {
   let suspicionScore = 0
 
   const aiSizes = [
-    { w: 512, h: 512, label: 'SD 1.x standard', confidence: 'high' },
-    { w: 768, h: 768, label: 'SD 1.x high-res', confidence: 'high' },
-    { w: 1024, h: 1024, label: 'SDXL / DALL-E square', confidence: 'high' },
-    { w: 1024, h: 1792, label: 'DALL-E 3 portrait', confidence: 'high' },
-    { w: 1792, h: 1024, label: 'DALL-E 3 landscape', confidence: 'high' },
-    { w: 1344, h: 768, label: 'Midjourney landscape', confidence: 'high' },
-    { w: 768, h: 1344, label: 'Midjourney portrait', confidence: 'high' },
-    { w: 1216, h: 832, label: 'Midjourney wide', confidence: 'medium' },
-    { w: 832, h: 1216, label: 'Midjourney tall', confidence: 'medium' },
-    { w: 512, h: 768, label: 'SD portrait', confidence: 'medium' },
-    { w: 768, h: 512, label: 'SD landscape', confidence: 'medium' },
-    { w: 640, h: 480, label: 'GAN output', confidence: 'medium' },
+    { w: 512, h: 512, label: 'SD 1.x standard', c: 'high' },
+    { w: 768, h: 768, label: 'SD high-res', c: 'high' },
+    { w: 1024, h: 1024, label: 'SDXL / DALL-E square', c: 'high' },
+    { w: 1024, h: 1792, label: 'DALL-E 3 portrait', c: 'high' },
+    { w: 1792, h: 1024, label: 'DALL-E 3 landscape', c: 'high' },
+    { w: 1344, h: 768, label: 'Midjourney landscape', c: 'high' },
+    { w: 768, h: 1344, label: 'Midjourney portrait', c: 'high' },
+    { w: 1216, h: 832, label: 'Midjourney wide', c: 'medium' },
+    { w: 832, h: 1216, label: 'Midjourney tall', c: 'medium' },
+    { w: 512, h: 768, label: 'SD portrait', c: 'medium' },
+    { w: 768, h: 512, label: 'SD landscape', c: 'medium' },
   ]
 
   const exactMatch = aiSizes.find(s => s.w === width && s.h === height)
   if (exactMatch) {
-    signals.push({ label: `Size matches ${exactMatch.label} (${width}x${height})`, suspicious: true })
-    suspicionScore += exactMatch.confidence === 'high' ? 55 : 35
+    signals.push({ label: `Exact match: ${exactMatch.label} (${width}×${height})`, suspicious: true })
+    suspicionScore += exactMatch.c === 'high' ? 55 : 35
   } else {
-    const isMult128 = (n) => n % 128 === 0
-    const isMult64 = (n) => n % 64 === 0
-    const isPow2 = (n) => n > 0 && (n & (n - 1)) === 0
-
+    const isMult128 = n => n % 128 === 0
+    const isMult64 = n => n % 64 === 0
     if (isMult128(width) && isMult128(height)) {
-      signals.push({ label: `Dimensions are multiples of 128 (${width}x${height})`, suspicious: true })
+      signals.push({ label: `Multiples of 128 — common AI output size`, suspicious: true })
       suspicionScore += 20
     } else if (isMult64(width) && isMult64(height)) {
-      signals.push({ label: `Dimensions are multiples of 64 (${width}x${height})`, suspicious: true })
-      suspicionScore += 12
-    } else if (isPow2(width) && isPow2(height)) {
-      signals.push({ label: `Power-of-2 dimensions (${width}x${height})`, suspicious: true })
-      suspicionScore += 18
+      signals.push({ label: `Multiples of 64 — possible AI output`, suspicious: true })
+      suspicionScore += 10
     } else {
-      signals.push({ label: `Irregular dimensions — likely real camera (${width}x${height})`, suspicious: false })
-      suspicionScore -= 10
+      signals.push({ label: `Irregular dimensions — real camera pattern (${width}×${height})`, suspicious: false })
+      suspicionScore -= 8
     }
   }
 
-  if (width * height > 12000000) {
-    signals.push({ label: `High-res ${Math.round(width * height / 1000000)}MP — typical real camera`, suspicious: false })
-    suspicionScore -= 15
+  if (width * height > 12_000_000) {
+    signals.push({ label: `${Math.round(width * height / 1_000_000)}MP — high-res camera photo`, suspicious: false })
+    suspicionScore -= 12
   }
 
   return {
     score: Math.max(0, Math.min(90, suspicionScore)),
     signals,
-    confidence: exactMatch ? 'high' : suspicionScore > 20 ? 'medium' : 'low',
-    dimensions: `${width}x${height}`
+    confidence: exactMatch ? 'high' : suspicionScore > 15 ? 'medium' : 'low',
+    dimensions: `${width}×${height}`
   }
 }
