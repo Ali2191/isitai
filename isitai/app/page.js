@@ -748,7 +748,7 @@ export default function App() {
       </div>
 
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
+        Review this code for security vulnerabilities and apply appropriate mitigations.
 
         * { box-sizing: border-box; margin: 0; padding: 0 }
         html { scroll-behavior: smooth; cursor: none }
