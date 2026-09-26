@@ -72,11 +72,13 @@ export async function analyzeAudioBuffer(buffer, mimeType = 'audio/mpeg') {
   const head = buffer.subarray(0, 64).toString('latin1')
   if (/LMMF|LAME3\.9[0-3]/.test(head)) signals.push({ label: 'Encoder signature consistent with synthetic/converted audio tooling', suspicious: true, weight: 6 })
 
+  let st = null, waveform = null
   if (await hasFfmpeg()) {
     try {
       const pcm = await decodeToPcm(buffer)
-      const st = pcmStats(pcm)
+      st = pcmStats(pcm)
       decoded = !!st
+      waveform = audioWaveformSummary(pcm)
       if (st) {
         signals.push({ label: `Duration ${st.durationSec}s · RMS ${st.rms} · peak ${st.peak}`, suspicious: false })
         if (st.nearZeroRatio < 0.0005 && st.rms > 3000) { score += 16; signals.push({ label: 'No natural silence floor — every sample carries energy (TTS/music-model tell)', suspicious: true }) }
@@ -102,7 +104,55 @@ export async function analyzeAudioBuffer(buffer, mimeType = 'audio/mpeg') {
     band: { lo: Math.max(0, score - 20), hi: Math.min(100, score + 20), label: `${Math.max(0, score - 20)}–${Math.min(100, score + 20)}%` },
     verdict, confidence: decoded ? 'low' : 'very_low', degraded: !decoded,
     degradedReason: decoded ? 'Statistical audio forensics only; no neural ASVspoof-style anti-deepfake model attached.' : 'Could not decode PCM on this server.',
-    decoded, signals, mimeType, analyzedAt: Date.now(),
+    decoded, stats: st, waveform, signals, mimeType, analyzedAt: Date.now(),
     privacy: 'Audio was analyzed transiently in memory and discarded. Nothing stored.',
   }
 }
+
+// ─── Waveform rendering for the UI (plain JSON, client-safe) ────────────────
+// Decoded PCM is downsampled into a peak envelope + RMS trace + amplitude
+// histogram so the results page can draw a real waveform (the audio analogue
+// of the image preview behind the heatmap), plus a per-window suspicion strip
+// that mirrors the 8×8 saliency grid of the image detector.
+function envelopeFromPcm(int16, windows = 240) {
+  const n = int16.length
+  if (!n) return null
+  const wsize = Math.max(1, Math.floor(n / windows))
+  const peaks = [], rmses = [], hist = new Array(24).fill(0)
+  for (let i = 0; i < windows; i++) {
+    let mx = 0, sum = 0, c = 0
+    const end = Math.min(n, (i + 1) * wsize)
+    for (let j = i * wsize; j < end; j++) {
+      const a = Math.abs(int16[j])
+      if (a > mx) mx = a
+      sum += int16[j] * int16[j]; c++
+    }
+    peaks.push(+(mx / 32768).toFixed(3))
+    rmses.push(+Math.sqrt(sum / Math.max(c, 1)).toFixed(0))
+    const bin = Math.min(23, Math.floor((mx / 32768) * 24))
+    hist[bin]++
+  }
+  return { peaks, rmses, hist }
+}
+
+export function audioWaveformSummary(int16) {
+  const env = envelopeFromPcm(int16)
+  if (!env) return null
+  const globalRms = env.rmses.reduce((a, b) => a + b, 0) / env.rmses.length || 1
+  // per-window localization strip: energy-less windows with dead-steady RMS
+  // are the TTS/music signature (no natural pauses or dynamics)
+  const strip = env.peaks.map((p, i) => {
+    const steady = Math.abs(env.rmses[i] - globalRms) / globalRms < 0.15
+    return +(clamp01((p < 0.02 ? 0.2 : 0.45) + (steady ? 0.3 : 0))).toFixed(3)
+  })
+  return {
+    sampleRate: 16000,
+    durationSec: +(int16.length / 16000).toFixed(2),
+    envelope: env.peaks,
+    rms: env.rmses,
+    histogram: env.hist,
+    suspicionStrip: strip,
+  }
+}
+
+function clamp01(v) { return Math.max(0, Math.min(1, v)) }

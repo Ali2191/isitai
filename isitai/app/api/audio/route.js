@@ -1,4 +1,5 @@
-import { analyzeAudioBuffer, MAX_AUDIO_BYTES } from '../../../lib/audioDetect'
+import { analyzeAudioPassage } from '../../../lib/audioAnalyze'
+import { MAX_AUDIO_BYTES } from '../../../lib/audioDetect'
 import { rateLimit, getClientIp, rateLimitResponse } from '../../../lib/rateLimit'
 
 export const runtime = 'nodejs'
@@ -18,7 +19,7 @@ export async function POST(request) {
     if (!(file.type || '').startsWith('audio/')) return Response.json({ error: 'File is not audio' }, { status: 415 })
     if (file.size > MAX_AUDIO_BYTES) return Response.json({ error: `Audio too large (limit ${MAX_AUDIO_BYTES / 1024 / 1024} MB)` }, { status: 413 })
     const buffer = Buffer.from(await file.arrayBuffer())
-    const result = await analyzeAudioBuffer(buffer, file.type)
+    const result = await analyzeAudioPassage(buffer, file.type)
     return Response.json({ ...result, rateRemaining: rl.remaining })
   } catch (e) {
     return Response.json({ error: String(e?.message || e).slice(0, 200) }, { status: 500 })
