@@ -66,7 +66,39 @@ export default function ReportPage({ params }) {
               ) : <p style={{ color: muted, fontSize: 14 }}>Models were unavailable at analysis time — heuristics-only verdict.</p>}
             </section>
 
-            {[['Metadata & provenance', data.layers?.metadata], ['Dimensions', data.layers?.dimensions], ['File structure', data.layers?.structure], ['Pixel forensics', data.layers?.pixels]].map(([title, layer]) => (
+            {data.animated && (
+              <section style={{ border: `1px solid ${border}`, borderRadius: 16, padding: 24, marginBottom: 16 }}>
+                <h2 style={{ fontSize: 16, marginTop: 0 }}>Temporal analysis — animated GIF / video keyframes</h2>
+                <p style={{ color: muted, fontSize: 14, margin: '0 0 10px' }}>
+                  {data.perFrame?.length || 0} of {data.temporal ? 'the sampled' : '?'} frames analyzed frame-by-frame. Noise-floor spread {(data.temporal?.noiseSpread ?? 0).toFixed(3)}, texture spread {(data.temporal?.textureSpread ?? 0).toFixed(3)}, luminance drift {(data.temporal?.meanLumDrift ?? 0).toFixed(3)}.
+                </p>
+                <div style={{ display: 'flex', gap: 3, alignItems: 'flex-end', height: 48, marginBottom: 10 }}>
+                  {(data.perFrame || []).map((f, i) => (
+                    <div key={i} title={`Frame ${i + 1}: ${f.score}% AI`} style={{ flex: 1, height: `${Math.max(4, f.score)}%`, background: f.score >= 55 ? '#ef4444' : '#52525b', borderRadius: 2 }} />
+                  ))}
+                </div>
+                <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+                  {(data.layers?.pixels?.signals || []).slice(0, 10).map((s, i) => (
+                    <li key={i} style={{ padding: '6px 0', fontSize: 14, color: s.suspicious ? '#fda4af' : '#86efac' }}>{s.suspicious ? '⚠︎' : '✓'} {s.label}</li>
+                  ))}
+                </ul>
+              </section>
+            )}
+
+            {data.saliency?.cells?.length > 0 && (
+              <section style={{ border: `1px solid ${border}`, borderRadius: 16, padding: 24, marginBottom: 16 }}>
+                <h2 style={{ fontSize: 16, marginTop: 0 }}>Region suspicion map</h2>
+                <p style={{ color: muted, fontSize: 13, margin: '0 0 10px' }}>Where in the frame the forensic evidence concentrates ({data.saliency.grid}×{data.saliency.grid} regions — the image itself is never shared).</p>
+                <div style={{ display: 'grid', gridTemplateColumns: `repeat(${data.saliency.grid},1fr)`, gap: 3, maxWidth: 260 }}>
+                  {data.saliency.cells.map((val, i) => (
+                    <div key={i} title={`Region ${i + 1}: ${(val * 100).toFixed(0)}% suspicion`}
+                      style={{ aspectRatio: '1', borderRadius: 3, background: val >= 0.66 ? '#ef4444' : val >= 0.4 ? '#f59e0b' : val >= 0.2 ? '#3f3f46' : '#1c1c1e' }} />
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {[['Metadata & provenance', data.layers?.metadata], ['Dimensions', data.layers?.dimensions], ['File structure', data.layers?.structure], ['Pixel forensics', data.layers?.pixels], ['Sensor noise (PRNU) & compression', data.layers?.noise], ['Anatomy checks', data.layers?.anatomy]].map(([title, layer]) => (
               <section key={title} style={{ border: `1px solid ${border}`, borderRadius: 16, padding: 24, marginBottom: 16 }}>
                 <h2 style={{ fontSize: 16, marginTop: 0 }}>{title} <span style={{ color: muted, fontWeight: 400, fontSize: 13 }}>· score {layer?.score ?? '—'}</span></h2>
                 <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>

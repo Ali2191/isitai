@@ -18,9 +18,15 @@ let lastPurge = Date.now()
 function sanitizeLayers(layers) {
   if (!layers || typeof layers !== 'object') return {}
   const pick = l => l && typeof l === 'object'
-    ? { score: l.score, aiScore: l.aiScore, available: l.available, degraded: l.degraded, signals: Array.isArray(l.signals) ? l.signals.slice(0, 40) : [], results: Array.isArray(l.results) ? l.results.slice(0, 8) : [] }
+    ? { score: l.score, aiScore: l.aiScore, available: l.available, degraded: l.degraded, suspicious: l.suspicious, boxes: Array.isArray(l.boxes) ? l.boxes.slice(0, 12) : undefined, signals: Array.isArray(l.signals) ? l.signals.slice(0, 40) : [], results: Array.isArray(l.results) ? l.results.slice(0, 8) : [] }
     : undefined
-  return { models: pick(layers.models), metadata: pick(layers.metadata), dimensions: pick(layers.dimensions), structure: pick(layers.structure), pixels: pick(layers.pixels) }
+  return { models: pick(layers.models), metadata: pick(layers.metadata), dimensions: pick(layers.dimensions), structure: pick(layers.structure), pixels: pick(layers.pixels), noise: pick(layers.noise), anatomy: pick(layers.anatomy) }
+}
+
+// Keep only the numeric region-suspicion grid (64 floats) — never image bytes.
+function sanitizeSaliency(s) {
+  if (!s || !Array.isArray(s.cells)) return undefined
+  return { grid: s.grid || 8, cells: s.cells.slice(0, 128).map(v => Math.max(0, Math.min(1, Number(v) || 0))), mean: s.mean, peak: s.peak }
 }
 
 function purge() {
@@ -59,7 +65,7 @@ export async function POST(request) {
         purge()
         const base = process.env.NEXT_PUBLIC_SITE_URL || new URL(request.url).origin
         const id = `${String(body.result.id || 'rpt').slice(0, 16)}-${Math.random().toString(36).slice(2, 8)}`
-        const stored = { ...body.result, shareId: id, layers: sanitizeLayers(body.result.layers) }
+        const stored = { ...body.result, shareId: id, layers: sanitizeLayers(body.result.layers), saliency: sanitizeSaliency(body.result.saliency) }
         REPORTS.set(id, { result: stored, createdAt: Date.now() })
         return Response.json({
           id,
@@ -94,7 +100,6 @@ export async function POST(request) {
     purge()
     const id = `${result.id}-${Math.random().toString(36).slice(2, 8)}`
     REPORTS.set(id, { result: { ...result, shareId: id }, createdAt: Date.now() })
-
     const base = process.env.NEXT_PUBLIC_SITE_URL || new URL(request.url).origin
     return Response.json({
       id,

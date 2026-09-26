@@ -264,6 +264,8 @@ export default function Home() {
   const layerDefs = result_ ? [
     { icon: 'M', title: 'Metadata & Provenance', layer: result_.layers?.metadata },
     { icon: 'P', title: 'Pixel Forensics', layer: result_.layers?.pixels },
+    { icon: 'N', title: 'Sensor Noise (PRNU) & Compression', layer: result_.layers?.noise },
+    { icon: 'A', title: 'Anatomy Checks', layer: result_.layers?.anatomy },
     { icon: 'F', title: 'File Structure', layer: result_.layers?.structure },
     { icon: 'D', title: 'Dimensions', layer: result_.layers?.dimensions },
   ] : []
@@ -272,8 +274,12 @@ export default function Home() {
     { icon: '01', label: 'AI Models' },
     { icon: '02', label: 'Metadata' },
     { icon: '03', label: 'Forensics' },
-    { icon: '04', label: 'Provenance' },
-    { icon: '05', label: 'Dimensions' },
+    { icon: '04', label: 'Sensor Noise' },
+    { icon: '05', label: 'Anatomy' },
+    { icon: '06', label: 'Heatmap' },
+    { icon: '07', label: 'GIF / Video' },
+    { icon: '08', label: 'Provenance' },
+    { icon: '09', label: 'Dimensions' },
   ]
 
   const howContent = [
@@ -293,12 +299,32 @@ export default function Home() {
       tags: ['2-D FFT spectrum', '1/f power law', 'Texture variance', 'JPEG quantization tables']
     },
     {
-      title: 'Cryptographic provenance: C2PA & SynthID', icon: '04',
-      body: 'We scan containers for C2PA content credentials (signed chains from Adobe, Truepic cameras…), Google DeepMind SynthID watermarks (Gemini/Imagen), GLIGEN tree-rings, XMP Generator fields written by GPT-image, and IPTC AI-tags used by stock platforms. A verified C2PA "captured by camera" manifest is near-proof of authenticity; an AI-signed one is near-proof of generation.',
+      title: 'PRNU sensor noise & compression forensics', icon: '04',
+      body: 'Every camera sensor leaves a unique photo-response non-uniformity (PRNU) fingerprint. We extract the high-frequency residual and measure its strength and spatial consistency — generator output has an absent or unnaturally uniform noise floor. We also parse JPEG quantization tables to detect double-compression (re-saves typical of camera/editing chains) and test 8×8 block-boundary periodicity, which smooth diffusion output lacks.',
+      tags: ['PRNU residual map', 'Regional noise consistency', 'Double-compression detection', '8×8 block periodicity']
+    },
+    {
+      title: 'Anatomy plausibility checks', icon: '05',
+      body: 'Generative models still stumble on faces and hands. Using skin-tone segmentation we locate face regions, then test eye symmetry, vertical alignment and local warp patterns; hand-shaped blobs are checked for finger-count and geometry anomalies. Every suspicious region is returned as a normalized box so it can be drawn directly on the image as a heatmap overlay.',
+      tags: ['Face region detection', 'Eye symmetry & warping', 'Hand blob geometry', 'Boxed evidence for overlays']
+    },
+    {
+      title: 'Region-level saliency heatmap', icon: '06',
+      body: 'Rather than one number for the whole picture, we build an 8×8 grid scoring each region\'s suspicion from local noise statistics, texture anomalies and anatomy boxes. The result page renders this as a clickable heatmap — tap any flagged cell to zoom into that region and see exactly where the evidence points.',
+      tags: ['8×8 suspicion grid', 'Local noise + texture fusion', 'Click-to-zoom inspection', 'Rendered on results & reports']
+    },
+    {
+      title: 'Animated GIF & video temporal analysis', icon: '07',
+      body: 'Still-image detectors fail on animation, so animated GIFs are decoded into up to 16 keyframes and analyzed frame-by-frame. Generated video re-uses the same synthetic grain across frames (a frozen noise floor), shows identical texture statistics and irregular interpolated luminance jumps. The same per-frame engine powers the /api/video endpoint for mp4/webm keyframe uploads.',
+      tags: ['Up to 16 keyframes', 'Noise-floor evolution', 'Texture drift & jumps', '/api/video endpoint']
+    },
+    {
+      title: 'Cryptographic provenance: C2PA & SynthID', icon: '08',
+      body: 'We scan containers for C2PA content credentials (signed chains from Adobe, Truepic cameras…), Google DeepMind SynthID watermarks (Gemini/Imagen), GLIGEN tree-rings, XMP Generator fields written by GPT-image, and IPTC AI-tags used by stock platforms. A verified C2PA "captured by camera" manifest is near-proof of authenticity; an AI-signed one is near-proof of generation. Browse any past upload\'s raw provenance findings at /provenance.',
       tags: ['C2PA manifests', 'SynthID markers', 'GLIGEN detection', 'XMP / IPTC scans']
     },
     {
-      title: 'Dimension heuristics', icon: '05',
+      title: 'Dimension heuristics', icon: '09',
       body: 'AI generators emit standard sizes: 512×512 (SD 1.x), 1024×1024 (SDXL/DALL-E), 1024×1792 (DALL-E 3), 1344×768 (Midjourney), 1008×1776 (Flux). Real cameras produce sensor-native irregular dimensions. We match exact sizes, multiples of 64/128, and aspect ratios — high-megapixel images earn a real-photo bonus.',
       tags: ['Exact size matching', 'Divisibility checks', 'Aspect ratios', 'Megapixel bonus']
     }
@@ -321,6 +347,8 @@ export default function Home() {
               {label}
             </button>
           ))}
+          <Link href="/isitext" style={{ padding: '6px 12px', color: textSoft, textDecoration: 'none', fontSize: '0.84rem' }}>Text</Link>
+          <Link href="/isitaudio" style={{ padding: '6px 12px', color: textSoft, textDecoration: 'none', fontSize: '0.84rem' }}>Audio</Link>
           <Link href="/api-guide" style={{ marginLeft: '4px', padding: '6px 12px', color: textSoft, textDecoration: 'none', fontSize: '0.84rem', border: `1px solid ${border}`, borderRadius: '5px' }}>API</Link>
           <a href="https://github.com/Ali2191/isitai" target="_blank" rel="noreferrer" style={{ marginLeft: '4px', padding: '6px 12px', color: textSoft, textDecoration: 'none', fontSize: '0.84rem', border: `1px solid ${border}`, borderRadius: '5px' }}>
             GitHub
@@ -335,6 +363,8 @@ export default function Home() {
           {[['home', 'Home'], ['how', 'How it works'], ['detect', 'Try free']].map(([id, label]) => (
             <button key={id} onClick={() => navigate(id)} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', padding: '0.8rem 0', color: page === id ? ink : textSoft, cursor: 'pointer', fontSize: '1rem', fontWeight: page === id ? 600 : 400, borderBottom: `1px solid ${border}`, fontFamily: 'inherit' }}>{label}</button>
           ))}
+          <Link href="/isitext" onClick={() => setMenuOpen(false)} style={{ display: 'block', padding: '0.8rem 0', color: ink, textDecoration: 'none', fontSize: '1rem', borderBottom: `1px solid ${border}` }}>AI text detector</Link>
+          <Link href="/isitaudio" onClick={() => setMenuOpen(false)} style={{ display: 'block', padding: '0.8rem 0', color: ink, textDecoration: 'none', fontSize: '1rem', borderBottom: `1px solid ${border}` }}>AI audio detector</Link>
           <Link href="/api-guide" onClick={() => setMenuOpen(false)} style={{ display: 'block', padding: '0.8rem 0', color: ink, textDecoration: 'none', fontSize: '1rem', borderBottom: `1px solid ${border}` }}>API guide</Link>
         </div>
       )}
@@ -344,14 +374,14 @@ export default function Home() {
         {page === 'home' && (
           <div>
             <section style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', padding: 'clamp(4rem,10vw,7rem) clamp(1.25rem,5vw,3rem) clamp(3rem,6vw,4rem)', maxWidth: '980px', margin: '0 auto' }}>
-              <p style={{ fontSize: '0.8rem', fontWeight: 600, color: inkFaint, textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: '1.25rem' }}>IsItAI — AI image detector</p>
+              <p style={{ fontSize: '0.8rem', fontWeight: 600, color: inkFaint, textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: '1.25rem' }}>IsItAI — AI detection for images, video · GIFs, text &amp; audio</p>
 
               <h1 style={{ fontSize: 'clamp(2.2rem,6vw,4.2rem)', fontWeight: 700, margin: '0 0 1.4rem', lineHeight: 1.1, letterSpacing: '-0.03em', maxWidth: '720px', color: ink }}>
                 Is this image real,<br />or generated?
               </h1>
 
               <p style={{ color: inkSoft, fontSize: 'clamp(1rem,2vw,1.15rem)', maxWidth: '600px', margin: '0 auto 2.25rem', lineHeight: 1.75 }}>
-                Upload a file or paste a URL. IsItAI runs four detection layers — machine-learning classifiers, EXIF metadata, pixel forensics, and provenance standards like C2PA — then explains its answer in plain language, including when it isn&apos;t sure.
+                Upload a file or paste a URL. IsItAI runs nine detection layers — machine-learning classifiers, EXIF metadata, pixel forensics, PRNU sensor noise, anatomy checks, provenance standards like C2PA, plus temporal analysis for animated GIFs and video keyframes — then explains its answer in plain language, including when it isn&apos;t sure. Also available for <Link href="/isitext" style={{ color: ink, textDecoration: 'underline', textUnderlineOffset: '3px' }}>text</Link> and <Link href="/isitaudio" style={{ color: ink, textDecoration: 'underline', textUnderlineOffset: '3px' }}>audio</Link>.
               </p>
 
               <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', justifyContent: 'center', marginBottom: '3.5rem' }}>
@@ -366,7 +396,7 @@ export default function Home() {
               </div>
 
               <ul style={{ listStyle: 'none', padding: 0, margin: '0 auto', display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(190px,1fr))', gap: '0 2rem', width: '100%', maxWidth: '880px', borderTop: `1px solid ${border}`, paddingTop: '1.5rem', textAlign: 'left' }}>
-                {[['ML ensemble', 'with graceful model failover'], ['Five signal layers', 'EXIF · FFT · C2PA · SynthID'], ['Uncertainty bands', 'we say so when we are unsure'], ['Local-only mode', 'nothing leaves your device']].map(([v, l]) => (
+                {[['ML ensemble', 'with graceful model failover'], ['Nine forensic layers', 'EXIF · FFT · PRNU · anatomy · C2PA'], ['GIF & video forensics', '16-keyframe temporal analysis'], ['Text & audio detectors', 'sibling tools, same pipeline'], ['Uncertainty bands', 'we say so when we are unsure'], ['Local-only mode', 'nothing leaves your device']].map(([v, l]) => (
                   <li key={v} style={{ padding: '0.5rem 0' }}>
                     <span style={{ fontWeight: 600, fontSize: '0.92rem', color: ink }}>{v}</span>
                     <span style={{ display: 'block', color: inkFaint, fontSize: '0.82rem', marginTop: '2px' }}>{l}</span>
@@ -386,6 +416,9 @@ export default function Home() {
                   ['Private by design', 'Images are analyzed transiently and never stored.', 'Bytes live in memory only, results are keyed by SHA-256 hash, and shareable reports contain numbers and text — never the image itself. Local-only mode goes further: analysis runs entirely in your browser.'],
                   ['URL and batch mode', 'Paste a link or drop up to ten files at once.', 'Built for fact-checkers working through a thread of suspicious images. URLs are fetched server-side (bypassing CORS) with SSRF guards; batches run sequentially with per-item status and one-click drill-in.'],
                   ['Shareable reports', 'A privacy-safe link to any verdict.', 'Generate a report URL that shows the score, uncertainty band, and every detected signal — no image attached, expires after seven days. Safe to paste into a newsroom Slack or a dispute thread.'],
+                  ['Animated GIF & video', 'Temporal forensics across keyframes.', 'Upload an animated GIF and we sample up to 16 keyframes: generated video re-uses the same synthetic grain frame-to-frame, so a frozen noise floor, identical texture statistics or interpolated luminance jumps push the score. The same per-frame engine powers /api/video for mp4/webm keyframes.'],
+                  ['Sensor-noise forensics', 'PRNU, double compression, block periodicity.', 'Real camera sensors imprint a unique noise fingerprint (PRNU). We measure that residual, detect JPEG double-compression traces from the quantization tables, and check 8×8 block periodicity — smooth generator output lacks it. Anatomy checks flag warped eyes, asymmetric features and malformed hands with heatmap boxes.'],
+                  ['Text & audio too', 'Same fusion, different medium.', 'The AI text detector measures burstiness, type-token ratio and LLM cliché fingerprints; the audio detector decodes waveforms to find TTS/voice-clone tells — over-clean high-frequency rolloff, unnatural silence floors, vocoder artifacts. Both share the score-band-verdict architecture of the image analyzer.'],
                 ].map(([title, teaser, more], fi) => (
                   <FeatureCard key={title} title={title} teaser={teaser} more={more} index={fi} inView={featuresInView} />
                 ))}
@@ -404,14 +437,14 @@ export default function Home() {
           <div style={{ maxWidth: '860px', margin: '0 auto', padding: 'clamp(2.5rem,5vw,4rem) clamp(1.25rem,5vw,2rem)' }}>
             <p style={{ fontSize: '0.8rem', fontWeight: 600, color: inkFaint, textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: '1rem' }}>Under the hood</p>
             <h1 style={{ fontSize: 'clamp(1.7rem,4vw,2.4rem)', fontWeight: 700, margin: '0 0 0.8rem', letterSpacing: '-0.02em' }}>How the detection works</h1>
-            <p style={{ color: inkSoft, maxWidth: '560px', lineHeight: 1.75, fontSize: '0.95rem', margin: '0 0 2.5rem' }}>Five independent layers each produce signals. They are fused into one score with an uncertainty band that widens when the layers disagree.</p>
+            <p style={{ color: inkSoft, maxWidth: '560px', lineHeight: 1.75, fontSize: '0.95rem', margin: '0 0 2.5rem' }}>Nine independent layers each produce signals — including temporal keyframe analysis for animated GIFs and video. They are fused into one score with an uncertainty band that widens when the layers disagree.</p>
 
-            <div role="tablist" aria-label="Detection layers" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(120px,1fr))', borderBottom: `1px solid ${border}`, marginBottom: '2rem' }}>
+            <div role="tablist" aria-label="Detection layers" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(105px,1fr))', borderBottom: `1px solid ${border}`, marginBottom: '2rem' }}>
               {howSteps.map((s, i) => (
                 <button key={i} role="tab" aria-selected={activeHow === i} onClick={() => setActiveHow(i)}
-                  style={{ padding: '0.9rem 0.5rem', background: 'none', cursor: 'pointer', textAlign: 'left', minHeight: '52px', fontFamily: 'inherit', border: 'none', borderBottom: `2px solid ${activeHow === i ? ink : 'transparent'}`, marginBottom: '-1px', transition: 'border-color 0.15s' }}>
+                  style={{ padding: '0.9rem 0.4rem', background: 'none', cursor: 'pointer', textAlign: 'left', minHeight: '52px', fontFamily: 'inherit', border: 'none', borderBottom: `2px solid ${activeHow === i ? ink : 'transparent'}`, marginBottom: '-1px', transition: 'border-color 0.15s' }}>
                   <span style={{ fontSize: '0.7rem', color: activeHow === i ? ink : inkFaint, fontVariantNumeric: 'tabular-nums', marginRight: '6px' }}>{s.icon}</span>
-                  <span style={{ fontSize: '0.84rem', fontWeight: activeHow === i ? 600 : 400, color: activeHow === i ? ink : inkSoft }}>{s.label}</span>
+                  <span style={{ fontSize: '0.8rem', fontWeight: activeHow === i ? 600 : 400, color: activeHow === i ? ink : inkSoft }}>{s.label}</span>
                 </button>
               ))}
             </div>
@@ -488,7 +521,7 @@ export default function Home() {
                         <rect x="3" y="5" width="18" height="14" rx="2" /><circle cx="9" cy="10" r="1.6" /><path d="M5 17l4.5-4.5 3 3L16 12l3 3.5" />
                       </svg>
                       <span style={{ color: ink, fontWeight: 500, fontSize: '0.93rem' }}>Drop an image here, or <span style={{ textDecoration: 'underline', textUnderlineOffset: '3px' }}>browse</span></span>
-                      <span style={{ color: inkFaint, fontSize: '0.78rem' }}>PNG, JPG or WEBP, up to 20 MB</span>
+                      <span style={{ color: inkFaint, fontSize: '0.78rem' }}>PNG, JPG, WEBP or animated GIF (keyframe forensics), up to 20 MB</span>
                     </span>
                   </button>
                 )}
@@ -730,6 +763,9 @@ export default function Home() {
               {[['home', 'Home'], ['how', 'How it works'], ['detect', 'Try free']].map(([id, label]) => (
                 <button key={id} onClick={() => navigate(id)} style={{ display: 'block', background: 'none', border: 'none', color: textSoft, cursor: 'pointer', fontSize: '0.83rem', padding: '3px 0', marginBottom: '4px', textAlign: 'left', fontFamily: 'inherit' }}>{label}</button>
               ))}
+              <Link href="/isitext" style={{ display: 'block', color: textSoft, fontSize: '0.83rem', textDecoration: 'none', padding: '3px 0', marginBottom: '4px' }}>AI Text Detector</Link>
+              <Link href="/isitaudio" style={{ display: 'block', color: textSoft, fontSize: '0.83rem', textDecoration: 'none', padding: '3px 0', marginBottom: '4px' }}>AI Audio Detector</Link>
+              <Link href="/bulk-audit" style={{ display: 'block', color: textSoft, fontSize: '0.83rem', textDecoration: 'none', padding: '3px 0', marginBottom: '4px' }}>Bulk audit</Link>
               <Link href="/api-guide" style={{ display: 'block', color: textSoft, fontSize: '0.83rem', textDecoration: 'none', padding: '3px 0' }}>Public API</Link>
             </div>
             <div>
@@ -737,6 +773,9 @@ export default function Home() {
               <Link href="/how-to-detect-ai-images" style={{ display: 'block', color: textSoft, fontSize: '0.83rem', textDecoration: 'none', padding: '3px 0', marginBottom: '4px' }}>Detect AI images guide</Link>
               <Link href="/midjourney-vs-dalle-detector" style={{ display: 'block', color: textSoft, fontSize: '0.83rem', textDecoration: 'none', padding: '3px 0', marginBottom: '4px' }}>Midjourney vs DALL-E</Link>
               <Link href="/ai-video-deepfake-guide" style={{ display: 'block', color: textSoft, fontSize: '0.83rem', textDecoration: 'none', padding: '3px 0', marginBottom: '4px' }}>Deepfakes & video</Link>
+              <Link href="/provenance" style={{ display: 'block', color: textSoft, fontSize: '0.83rem', textDecoration: 'none', padding: '3px 0', marginBottom: '4px' }}>C2PA provenance viewer</Link>
+              <Link href="/benchmark" style={{ display: 'block', color: textSoft, fontSize: '0.83rem', textDecoration: 'none', padding: '3px 0', marginBottom: '4px' }}>Public benchmark</Link>
+              <Link href="/status" style={{ display: 'block', color: textSoft, fontSize: '0.83rem', textDecoration: 'none', padding: '3px 0' }}>Service status</Link>
             </div>
             <div>
               <div style={{ fontSize: '0.68rem', fontWeight: 600, color: textMuted, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '0.75rem' }}>Legal</div>
