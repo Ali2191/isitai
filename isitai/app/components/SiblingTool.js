@@ -30,10 +30,12 @@ export default function SiblingTool({ kind, api, title, intro, placeholder, acce
   }
 
   const v = res?.verdict
+  const cells = res?.saliency?.cells
+  const G = res?.saliency?.grid || 8
   return (
     <main style={{ maxWidth: 860, margin: '0 auto', padding: '40px 20px', color: '#eee', fontFamily: 'ui-sans-serif, system-ui' }}>
       <nav style={{ fontSize: 14, color: '#888' }}>
-        <a href="/" style={{ color: '#8ab4f8' }}>Images</a> · <a href="/isitext" style={{ color: kind === 'text' ? '#fff' : '#8ab4f8' }}>Text</a> · <a href="/isitaudio" style={{ color: kind === 'audio' ? '#fff' : '#8ab4f8' }}>Audio</a>
+        <a href="/" style={{ color: '#8ab4f8' }}>Images</a> · <a href="/isitext" style={{ color: kind === 'text' ? '#fff' : '#8ab4f8' }}>Text</a> · <a href="/isitaudio" style={{ color: kind === 'audio' ? '#fff' : '#8ab4f8' }}>Audio</a> · <a href="/provenance" style={{ color: '#8ab4f8' }}>Provenance</a> · <a href="/benchmark" style={{ color: '#8ab4f8' }}>Benchmark</a> · <a href="/status" style={{ color: '#8ab4f8' }}>Status</a>
       </nav>
       <h1 style={{ marginTop: 16 }}>{title}</h1>
       <p style={{ color: '#aaa', lineHeight: 1.6 }}>{intro}</p>
@@ -61,7 +63,18 @@ export default function SiblingTool({ kind, api, title, intro, placeholder, acce
           {(res.signals || res.features?.signals || []).slice(0, 12).map((s, i) => (
             <p key={i} style={{ margin: '6px 0', color: s.suspicious ? '#fb923c' : '#9ca3af' }}>{s.suspicious ? '▲' : '·'} {s.label || s.name}{s.why ? ` — ${s.why}` : ''}</p>
           ))}
-          {res.sha256 && <p style={{ color: '#666', fontSize: 12 }}>File hash: <code>{res.sha256.slice(0, 16)}…</code></p>}
+          {res.sha256 && <p style={{ color: '#666', fontSize: 12 }}>File hash: <code>{res.sha256.slice(0, 16)}…</code> — reproducible verdict history: <a href={`/i/${res.sha256}`} style={{ color: '#8ab4f8' }}>/i/{res.sha256.slice(0, 12)}…</a></p>}
+          {cells?.length > 0 && (
+            <div style={{ marginTop: 12 }}>
+              <p style={{ color: '#888', fontSize: 13, margin: '0 0 6px' }}>Region suspicion map ({G}×{G}):</p>
+              <div style={{ display: 'grid', gridTemplateColumns: `repeat(${G},1fr)`, gap: 2, maxWidth: 220 }}>
+                {cells.map((val, i) => (
+                  <div key={i} title={`Region ${i + 1}: ${(val * 100).toFixed(0)}% suspicion`}
+                    style={{ aspectRatio: '1', borderRadius: 2, background: val >= 0.66 ? '#ef4444' : val >= 0.4 ? '#f59e0b' : val >= 0.2 ? '#3f3f46' : '#1c1c1e' }} />
+                ))}
+              </div>
+            </div>
+          )}
           <p style={{ color: '#666', fontSize: 12 }}>{res.privacy || 'Nothing was stored. Analysis happened transiently in memory.'}</p>
         </div>
       )}
