@@ -1,0 +1,31 @@
+{
+  "computedAt": 1790460920163,
+  "samples": 0,
+  "agreementPct": null,
+  "actionableBuckets": 0,
+  "corrections": {
+    "0-14": 0,
+    "15-37": 0,
+    "38-61": 0,
+    "62-84": 0,
+    "85-99": 0
+  },
+  "thresholds": {
+    "aiLikely": 60,
+    "aiDefinitive": 85,
+    "realLikely": 15
+  },
+  "note": "Weekly automatic recalibration",
+  "historyNotes": [
+    "0-14: 0 samples — below threshold (15), correction held at 0",
+    "15-37: 0 samples — below threshold (15), correction held at 0",
+    "38-61: 0 samples — below threshold (15), correction held at 0",
+    "62-84: 0 samples — below threshold (15), correction held at 0",
+    "85-99: 0 samples — below threshold (15), correction held at 0",
+    "0-14: 0 samples — below threshold (15), correction held at 0",
+    "15-37: 0 samples — below threshold (15), correction held at 0",
+    "38-61: 0 samples — below threshold (15), correction held at 0",
+    "62-84: 0 samples — below threshold (15), correction held at 0",
+    "85-99: 0 samples — below threshold (15), correction held at 0"
+  ]
+}

@@ -6,14 +6,17 @@
 // generated video (per-frame statistics snap to latent-grid "steps", frozen
 // noise floors, or impossible inter-frame smoothness).
 
-import { GIF, BitmapImage } from 'gifwrap'
+import pkg from 'gifwrap'
 import { analyzeFramePixels } from './frameStats.js'
+
+// gifwrap is CommonJS; its class is exported as `Gif` (capital I lowercase f).
+const GifCodec = pkg.GifCodec
 
 const MAX_FRAMES = 16
 
 /** Decode GIF into composited RGBA frames (capped at MAX_FRAMES keyframes). */
 export async function decodeGifFrames(buffer, targetSize = 192) {
-  const gif = await GIF.fromBuffer(Buffer.from(buffer))
+  const gif = await new GifCodec().decodeGif(Buffer.from(buffer))
   const n = gif.frames.length
   if (!n) throw new Error('GIF contains no frames')
   // even sampling across the timeline, always including first & last
@@ -25,9 +28,7 @@ export async function decodeGifFrames(buffer, targetSize = 192) {
   const cw = Math.max(8, Math.round(W * scale)), chh = Math.max(8, Math.round(H * scale))
 
   const canvas = new Uint8ClampedArray(cw * chh * 4) // RGBA working canvas
-  // pre-scale each source frame once
   const frames = []
-  let prevCanvas = null
   for (let k = 0; k < idxs.length; k++) {
     const want = idxs[k]
     // frames must be composited in order from the last known clean state;
@@ -37,11 +38,10 @@ export async function decodeGifFrames(buffer, targetSize = 192) {
     for (let fi = 0; fi <= want; fi++) {
       const f = gif.frames[fi]
       if (f.disposalMethod === 2 && local) clearRect(canvas, cw, chh, local)
-      local = drawFrameOnto(canvas, f, W, H, scale, cw, chh, prevCanvas)
+      local = drawFrameOnto(canvas, f, W, H, scale, cw, chh)
       if (f.disposalMethod === 3 && local) restore(canvas, local.snapshot)
       else if (f.disposalMethod === 3) local = null
     }
-    prevCanvas = null
     frames.push({ index: want, rgba: canvas.slice(0), width: cw, height: chh })
   }
   return { frames, totalFrames: n, sampled: idxs, width: W, height: H }
@@ -50,11 +50,11 @@ export async function decodeGifFrames(buffer, targetSize = 192) {
 function fillTransparent(a, w, h) { a.fill(0) }
 
 function rectOf(frame, W, H, scale, cw, chh) {
-  const x0 = clamp(Math.round((frame.left || 0) * scale), 0, cw - 1)
-  const y0 = clamp(Math.round((frame.top || 0) * scale), 0, chh - 1)
-  const fw = frame.width || W, fh = frame.height || H
-  const x1 = clamp(Math.round(((frame.left || 0) + fw) * scale), x0 + 1, cw)
-  const y1 = clamp(Math.round(((frame.top || 0) + fh) * scale), y0 + 1, chh)
+  const x0 = clamp(Math.round((frame.xOffset || 0) * scale), 0, cw - 1)
+  const y0 = clamp(Math.round((frame.yOffset || 0) * scale), 0, chh - 1)
+  const fw = frame.bitmap?.width || W, fh = frame.bitmap?.height || H
+  const x1 = clamp(Math.round(((frame.xOffset || 0) + fw) * scale), x0 + 1, cw)
+  const y1 = clamp(Math.round(((frame.yOffset || 0) + fh) * scale), y0 + 1, chh)
   return { x0, y0, x1, y1 }
 }
 function clearRect(a, w, h, r) {
@@ -65,22 +65,21 @@ function clearRect(a, w, h, r) {
 }
 
 function drawFrameOnto(canvas, frame, W, H, scale, cw, chh) {
-  const bi = frame.bitmap // gifwrap composites palette → RGBA bitmap
+  const bi = frame.bitmap // gifwrap decodes palette → raw RGBA buffer
+  if (!bi || !bi.data) return null
   const r = rectOf(frame, W, H, scale, cw, chh)
   const snapshot = canvas.slice((r.y0 * cw) * 4, (r.y1 * cw) * 4)
-  const transparent = frame.transparentIndex != null ? frame.transparentIndex : -1
   for (let y = r.y0; y < r.y1; y++) {
-    const sy = Math.floor(y / scale) - (frame.top || 0)
-    if (sy < 0 || sy >= (frame.height || H)) continue
+    const sy = Math.floor(y / scale) - (frame.yOffset || 0)
+    if (sy < 0 || sy >= bi.height) continue
     for (let x = r.x0; x < r.x1; x++) {
-      const sx = Math.floor(x / scale) - (frame.left || 0)
-      if (sx < 0 || sx >= (frame.width || W)) continue
+      const sx = Math.floor(x / scale) - (frame.xOffset || 0)
+      if (sx < 0 || sx >= bi.width) continue
       const si = (sy * bi.width + sx) * 4
       if (bi.data[si + 3] === 0) continue
       const di = (y * cw + x) * 4
       canvas[di] = bi.data[si]; canvas[di + 1] = bi.data[si + 1]
       canvas[di + 2] = bi.data[si + 2]; canvas[di + 3] = 255
-      void transparent
     }
   }
   return { ...r, snapshot }
