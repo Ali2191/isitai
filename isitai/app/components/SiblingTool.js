@@ -193,7 +193,6 @@ export default function SiblingTool({ kind, api, title, intro, placeholder, acce
           <Link href="/how-to-detect-ai-images" style={{ padding: '6px 12px', color: inkSoft, textDecoration: 'none', fontSize: '0.84rem' }}>Guides</Link>
           <Link href="/provenance" style={{ padding: '6px 12px', color: inkSoft, textDecoration: 'none', fontSize: '0.84rem' }}>Provenance</Link>
           <Link href="/bulk-audit" style={{ padding: '6px 12px', color: kind === 'bulk' ? ink : inkSoft, background: kind === 'bulk' ? surface : 'none', border: `1px solid ${kind === 'bulk' ? line : 'transparent'}`, borderRadius: 5, textDecoration: 'none', fontSize: '0.84rem', fontWeight: kind === 'bulk' ? 600 : 400 }}>Bulk</Link>
-          <Link href="/status" style={{ padding: '6px 12px', color: inkSoft, textDecoration: 'none', fontSize: '0.84rem' }}>Status</Link>
           <Link href="/api-guide" style={{ marginLeft: 4, padding: '6px 12px', color: inkSoft, textDecoration: 'none', fontSize: '0.84rem', border: `1px solid ${line}`, borderRadius: 5 }}>API</Link>
         </div>
       </nav>
