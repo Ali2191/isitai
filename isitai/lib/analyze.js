@@ -1,13 +1,20 @@
 // ─── Shared server-side analysis pipeline for isitai ────────────────────────
-// Used by /api/detect (uploads + URLs) and /api/report (shareable reports).
+// Used by /api/detect (uploads + URLs), /api/video (keyframes) and /api/report.
 // Layers: dimensions → JPEG structure → EXIF/XMP/IPTC/C2PA/SynthID metadata →
-// pixel forensics (FFT/noise/blocks) → HF model ensemble.
+// pixel forensics (FFT/noise/blocks) → PRNU + double-compression → anatomy →
+// region saliency map → self-hosted model worker + HF Inference ensemble.
 
 import sharp from 'sharp'
 import * as exifr from 'exifr'
 import FFT from 'fft.js'
 import { hashImage, cacheGet, cacheSet } from './cache.js'
 import { explainSignal } from './signals.js'
+import { analyzeNoiseAndCompression } from './prnu.js'
+import { analyzeAnatomy } from './anatomy.js'
+import { buildSaliencyMap } from './saliency.js'
+import { analyzeAnimatedGif } from './gifDetect.js'
+import { sha256, recordVerdict, getVerdictHistory } from './registry.js'
+import { getActiveCalibration, applyCorrection } from './calibration.js'
 
 // fft.js uses an INTERLEAVED complex layout: data = [re0, im0, re1, im1, ...]
 // and transform(out, data) with out also interleaved. Helper wraps that.
@@ -325,6 +332,17 @@ async function decodePixels(buffer, size = 256) {
   return { data, width: info.width, height: info.height, channels: info.channels }
 }
 
+// Square power-of-two luminance grid for FFT/PRNU/anatomy (S×S exactly).
+async function decodeSquareGray(buffer, S = 256) {
+  const { data, info } = await sharp(buffer)
+    .resize(S, S, { fit: 'fill' }) // square grid; aspect handled by callers
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true })
+  void info
+  return { gray: luminanceGray(data, S, S, info.channels), data, size: S, channels: info.channels }
+}
+
 function luminanceGray(data, w, h, ch) {
   const gray = new Float32Array(w * h)
   for (let i = 0; i < w * h; i++) {
@@ -545,13 +563,49 @@ async function analyzePixels(buffer) {
   }
 }
 
-// ─── 5. Hugging Face model ensemble ──────────────────────────────────────────
+// ─── 5. Model ensemble: self-hosted worker + Hugging Face Inference ─────────
+// Strong open detectors (CNNDet-style, TruFor/AIDE family) can be self-hosted
+// behind a tiny FastAPI worker (see /worker) on Modal/RunPod/HF Spaces; when
+// MODEL_WORKER_URL is configured it runs FIRST with the highest weight and the
+// HF API acts as fallback — no cold-start rate limits bottlenecking verdicts.
+
 const DEFAULT_MODELS = [
   { name: 'umm-maybe/AI-image-detector', weight: 0.25 },
   { name: 'haywoodsloan/ai-image-detector-deploy', weight: 0.40 },
   { name: 'umitkaya/deepfake-detector-all-ViT', weight: 0.20 },
   { name: 'shunk0211/deepfake-detection-multimodal', weight: 0.15 },
 ]
+
+async function callWorkerModel(sendBuffer, timeoutMs) {
+  const url = process.env.MODEL_WORKER_URL
+  if (!url) return null
+  const controller = new AbortController()
+  const t = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const res = await fetch(`${url.replace(/\/$/, '')}/predict`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        ...(process.env.MODEL_WORKER_TOKEN ? { Authorization: `Bearer ${process.env.MODEL_WORKER_TOKEN}` } : {}),
+      },
+      body: sendBuffer,
+      signal: controller.signal,
+    })
+    if (!res.ok) throw new Error(`worker HTTP ${res.status}`)
+    const j = await res.json()
+    if (typeof j.aiScore !== 'number') throw new Error('worker: missing aiScore')
+    return {
+      name: j.model || 'self-hosted-worker',
+      shortName: `worker:${(j.model || 'cnndet').split('/').pop()}`,
+      weight: Number(process.env.MODEL_WORKER_WEIGHT || 0.5),
+      aiScore: Math.round(j.aiScore),
+      rawLabels: j.labels || [{ label: 'AI-generated', score: Math.round(j.aiScore) }],
+      source: 'worker',
+    }
+  } finally {
+    clearTimeout(t)
+  }
+}
 
 async function callHfModel(model, key, sendBuffer, mimeType, timeoutMs) {
   const res = await fetch(
@@ -588,9 +642,21 @@ async function callHfModel(model, key, sendBuffer, mimeType, timeoutMs) {
 
 async function runModels(sendBuffer, mimeType) {
   const key = process.env.HUGGINGFACE_API_KEY
-  if (!key) {
+  const timeoutMs = Number(process.env.MODEL_TIMEOUT_MS || 12000)
+
+  // ── Self-hosted worker first (strongest model, no HF cold starts) ──
+  let workerResult = null, workerFailed = null
+  if (process.env.MODEL_WORKER_URL) {
+    try {
+      workerResult = await withTimeout(callWorkerModel(sendBuffer, timeoutMs + 4000), timeoutMs + 5000, 'worker')
+    } catch (e) {
+      workerFailed = `worker: ${String(e?.message || e).slice(0, 100)}`
+    }
+  }
+
+  if (!key && !workerResult) {
     return {
-      models: [], failed: ['HUGGINGFACE_API_KEY not configured'],
+      models: [], failed: [workerFailed || 'HUGGINGFACE_API_KEY not configured'],
       degraded: true, degradedReason: 'ML models unavailable (server misconfigured)',
       combined: null, disagreement: false, spread: 0, confidence: 'very_low',
     }
@@ -601,12 +667,15 @@ async function runModels(sendBuffer, mimeType) {
     ? DEFAULT_MODELS.filter(m => enabled.some(e => m.name.includes(e)))
     : DEFAULT_MODELS
 
-  const timeoutMs = Number(process.env.MODEL_TIMEOUT_MS || 12000)
-  const results = await Promise.allSettled(
-    models.map(m => withTimeout(callHfModel(m, key, sendBuffer, mimeType, timeoutMs), timeoutMs, m.name))
-  )
+  const results = key
+    ? await Promise.allSettled(
+        models.map(m => withTimeout(callHfModel(m, key, sendBuffer, mimeType, timeoutMs), timeoutMs, m.name))
+      )
+    : []
   const successful = results.filter(r => r.status === 'fulfilled').map(r => r.value)
   const failed = results.filter(r => r.status === 'rejected').map(r => String(r.reason?.message || r.reason).slice(0, 140))
+  if (workerFailed) failed.push(workerFailed)
+  if (workerResult) successful.unshift(workerResult)
 
   if (successful.length === 0) {
     return {
@@ -645,22 +714,29 @@ async function runModels(sendBuffer, mimeType) {
 }
 
 // ─── Fusion + uncertainty ────────────────────────────────────────────────────
-function fuse(modelCombined, exif, dim, jpeg, pix, metaSuspicious) {
+function fuse(modelCombined, exif, dim, jpeg, pix, metaSuspicious, noise, anatomy) {
   const ew = exif?.exifWeight || 0
   const dw = dim?.confidence === 'high' ? 0.12 : dim?.confidence === 'medium' ? 0.06 : 0
   const pw = pix?.confidence === 'high' ? 0.10 : pix?.confidence === 'medium' ? 0.05 : 0
   const jw = jpeg?.signals?.length ? 0.03 : 0
-  const mw = modelCombined == null ? 0 : Math.max(0.52, 1 - ew - dw - pw - jw)
-  const total = mw + ew + dw + pw + jw
+  // PRNU/noise layer: signed −40..+45 → map to 0..100 with modest weight
+  const nw = noise?.confidence === 'high' ? 0.10 : noise?.confidence === 'medium' ? 0.06 : 0.02
+  const aw = anatomy?.suspicious ? 0.07 : 0
+  const mw = modelCombined == null ? 0 : Math.max(0.45, 1 - ew - dw - pw - jw - nw - aw)
+  const total = mw + ew + dw + pw + jw + nw + aw
   if (total === 0) return 50
   // Map JPEG-structure score (-20..+25) onto 0..100 on a gentle slope
   const jpegNorm = clamp(((jpeg?.score || 0) + 20) * 2.2, 0, 100)
+  const noiseNorm = clamp(((noise?.score || 0) + 40) / 85 * 100, 0, 100)
+  const anatomyNorm = anatomy?.suspicious ? 82 : 30
   const parts =
     (modelCombined ?? 50) * mw +
     (exif?.aiScore || 0) * ew +
     (dim?.score || 0) * dw +
     (pix?.score || 0) * pw +
-    jpegNorm * jw
+    jpegNorm * jw +
+    noiseNorm * nw +
+    anatomyNorm * aw
   let score = Math.round(parts / total)
   // Definitive metadata evidence dominates
   if (metaSuspicious) score = Math.max(score, 92)
@@ -699,14 +775,30 @@ export async function analyzeImage(buffer, mimeType = 'image/jpeg') {
   const cached = cacheGet(hash)
   if (cached) return { ...cached, cached: true }
 
+  // Animated GIFs get keyframe sampling + temporal forensics instead of the
+  // single-frame pixel path.
+  let isAnimatedGif = false
+  try {
+    const meta = await sharp(buffer).metadata()
+    isAnimatedGif = meta.format === 'gif' && (meta.pageCount || 1) > 1
+  } catch { /* fall through */ }
+  if (isAnimatedGif) {
+    const gifResult = await analyzeAnimatedGifFromBuffer(buffer, hash)
+    cacheSet(hash, gifResult)
+    recordVerdict(hash, gifResult).catch(() => {})
+    return gifResult
+  }
+
   // Format conversion for models only — no resize/crop (matches HF playground)
   let sendBuffer = buffer
   let imageDimensions = { width: 0, height: 0 }
   let format = mimeType
+  let gifFrames = 1
   try {
     const metadata = await sharp(buffer).metadata()
     imageDimensions = { width: metadata.width || 0, height: metadata.height || 0 }
     format = metadata.format || mimeType
+    gifFrames = metadata.pageCount || 1
     if (metadata.format && !['jpeg', 'jpg', 'png', 'webp'].includes(metadata.format)) {
       sendBuffer = await sharp(buffer).jpeg({ quality: 92 }).toBuffer()
       format = 'image/jpeg'
@@ -717,12 +809,29 @@ export async function analyzeImage(buffer, mimeType = 'image/jpeg') {
   const jpeg = analyzeJpegStructure(buffer)
   const exif = await analyzeMetadata(buffer, format)
   const pix = await analyzePixels(buffer)
+
+  // New forensic layers: PRNU + double-compression, anatomy, saliency map.
+  // All share one square 256×256 decode to keep cost bounded.
+  let noise = null, anatomy = null, saliency = null
+  try {
+    const { gray, data, size: S, channels } = await decodeSquareGray(buffer, 256)
+    noise = analyzeNoiseAndCompression(gray, S, buffer)
+    anatomy = analyzeAnatomy(gray, S, data, S, S, channels)
+    saliency = buildSaliencyMap(gray, S, noise.maps)
+  } catch { /* layers are additive; pipeline survives without them */ }
+
   const models = await runModels(sendBuffer, format)
 
   const metaSuspicious = !!(exif.verdict === 'ai_tool' || exif.synthId || exif.gligen)
   const modelsAvailable = models.models.length > 0
-  const score = fuse(models.combined, exif, dim, jpeg, pix, metaSuspicious)
-  const band = uncertaintyBand(score, models.confidence, [exif.confidence, dim.confidence, pix.confidence], models.degraded, modelsAvailable)
+  let score = fuse(models.combined, exif, dim, jpeg, pix, metaSuspicious, noise, anatomy)
+
+  // Confidence calibration learned from user-confirmed ground truth (weekly job)
+  const cal = await getActiveCalibration()
+  const preCalScore = score
+  score = applyCorrection(score, cal)
+
+  const band = uncertaintyBand(score, models.confidence, [exif.confidence, dim.confidence, pix.confidence, noise?.confidence], models.degraded, modelsAvailable)
   const verdict = computeVerdict(score, band, models.degraded, modelsAvailable)
 
   // Annotate every signal with a plain-language explanation
@@ -743,10 +852,17 @@ export async function analyzeImage(buffer, mimeType = 'image/jpeg') {
     dimensions: { ...dim, signals: annotate(dim.signals) },
     structure: { ...jpeg, signals: annotate(jpeg.signals) },
     pixels: { ...pix, signals: annotate(pix.signals) },
+    noise: noise ? { ...noise, signals: annotate(noise.signals), maps: undefined } : undefined,
+    anatomy: anatomy ? { ...anatomy, boxes: anatomy.boxes } : undefined,
   }
+
+  // Reproducible verdicts: how many times has THIS EXACT byte-sequence been
+  // analyzed before, and did previous verdicts agree?
+  const history = await getVerdictHistory(hash).catch(() => null)
 
   const result = {
     id: hash.slice(0, 16),
+    sha256: hash,
     score,
     band,
     verdict,
@@ -754,15 +870,55 @@ export async function analyzeImage(buffer, mimeType = 'image/jpeg') {
     degraded: models.degraded,
     degradedReason: models.degradedReason,
     combined: models.combined,
+    calibration: preCalScore !== score ? { applied: true, before: preCalScore, after: score } : { applied: false },
     imageDimensions,
     layers,
+    saliency: saliency || undefined,
+    priorAnalyses: history ? { count: history.count, agreementPct: history.agreementPct, unanimous: history.unanimous } : null,
     cached: false,
     analyzedAt: Date.now(),
     privacy: 'Image was analyzed transiently in memory and discarded. Nothing stored.',
   }
 
   cacheSet(hash, result)
+  recordVerdict(hash, result).catch(() => {})
   return result
 }
 
-export { MAX_BYTES }
+// ─── Animated-GIF wrapper (keeps full response shape consistent) ─────────────
+async function analyzeAnimatedGifFromBuffer(buffer, hash) {
+  const gif = await analyzeAnimatedGif(buffer)
+  const dim = analyzeDimensions(gif.widthHint || 0, gif.heightHint || 0)
+  void dim
+  const exif = await analyzeMetadata(buffer, 'image/gif').catch(() => ({ signals: [], confidence: 'none', aiScore: 0, exifWeight: 0 }))
+  const score = clamp(Math.round((gif.score ?? 50) * 0.82 + (exif.aiScore || 0) * 0.18), 1, 99)
+  const band = uncertaintyBand(score, 'low', ['low'], true, false)
+  const verdict = computeVerdict(score, band, true, false)
+  const annotate = arr => (arr || []).map(s => ({ ...s, why: explainSignal(s.label) }))
+  return {
+    id: hash.slice(0, 16),
+    sha256: hash,
+    score,
+    band,
+    verdict,
+    confidence: 'low',
+    degraded: true,
+    degradedReason: `Animated GIF: ${gif.framesSampled || 0}/${gif.totalFrames || '?'} keyframes analyzed with temporal forensics (ML ensemble runs on still frames only)`,
+    imageDimensions: { width: 0, height: 0 },
+    animated: true,
+    temporal: gif.temporal,
+    perFrame: gif.perFrame,
+    layers: {
+      models: { available: false, degraded: true, reason: 'animated input', results: [], failed: [], disagreement: false, spread: 0, confidence: 'very_low' },
+      metadata: { ...exif, signals: annotate(exif.signals) },
+      dimensions: { score: 50, signals: [] },
+      structure: { score: 50, signals: [] },
+      pixels: { ...gif, signals: annotate(gif.signals) },
+    },
+    cached: false,
+    analyzedAt: Date.now(),
+    privacy: 'Image was analyzed transiently in memory and discarded. Nothing stored.',
+  }
+}
+
+export { MAX_BYTES, analyzeAnimatedGif, sha256 }
