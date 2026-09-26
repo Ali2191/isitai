@@ -137,10 +137,24 @@ export default function Home() {
   const clearImage = () => { setImageFile(null); setImagePreview(null); setResult(null); setFeedbackSent(null); setShareUrl(null) }
 
   async function analyzeImage(file, url) {
-    const form = new FormData()
-    if (file) form.append('image', file)
-    else if (url) form.append('imageUrl', url)
-    const res = await fetch('/api/analyze', { method: 'POST', body: form })
+    let res
+    if (file) {
+      const form = new FormData()
+      form.append('image', file)
+      res = await fetch('/api/detect', { method: 'POST', body: form })
+    } else {
+      res = await fetch('/api/detect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+      })
+    }
+    // If the server returns HTML (e.g. a 404 page or error document), res.json()
+    // would throw "Unexpected token '<'" — surface a clear message instead.
+    const ct = res.headers.get('content-type') || ''
+    if (!ct.includes('application/json')) {
+      throw new Error(`Server returned an unexpected response (HTTP ${res.status}). Please try again.`)
+    }
     const data = await res.json()
     if (!res.ok) throw new Error(data.error || 'Analysis failed.')
     return data
@@ -214,10 +228,12 @@ export default function Home() {
     if (!result) return
     setSharing(true)
     try {
-      const res = await fetch('/api/share', {
+      const res = await fetch('/api/report', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ result })
       })
+      const ct = res.headers.get('content-type') || ''
+      if (!ct.includes('application/json')) throw new Error(`Share endpoint returned an unexpected response (HTTP ${res.status}).`)
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Could not create share link.')
       const link = `${window.location.origin}/r/${data.id}`
@@ -326,29 +342,29 @@ export default function Home() {
         {/* Home */}
         {page === 'home' && (
           <div>
-            <section style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', padding: 'clamp(4rem,10vw,7rem) clamp(1.25rem,5vw,3rem) clamp(3rem,6vw,4rem)', maxWidth: '980px', margin: '0 auto' }}>
+            <section style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', padding: 'clamp(4rem,10vw,7rem) clamp(1.25rem,5vw,3rem) clamp(3rem,6vw,4rem)', maxWidth: '980px', margin: '0 auto' }}>
               <p style={{ fontSize: '0.8rem', fontWeight: 600, color: inkFaint, textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: '1.25rem' }}>IsItAI — AI image detector</p>
 
               <h1 style={{ fontSize: 'clamp(2.2rem,6vw,4.2rem)', fontWeight: 700, margin: '0 0 1.4rem', lineHeight: 1.1, letterSpacing: '-0.03em', maxWidth: '720px', color: ink }}>
                 Is this image real,<br />or generated?
               </h1>
 
-              <p style={{ color: inkSoft, fontSize: 'clamp(1rem,2vw,1.15rem)', maxWidth: '560px', margin: '0 0 2.25rem', lineHeight: 1.75 }}>
+              <p style={{ color: inkSoft, fontSize: 'clamp(1rem,2vw,1.15rem)', maxWidth: '600px', margin: '0 auto 2.25rem', lineHeight: 1.75 }}>
                 Upload a file or paste a URL. IsItAI runs four detection layers — machine-learning classifiers, EXIF metadata, pixel forensics, and provenance standards like C2PA — then explains its answer in plain language, including when it isn&apos;t sure.
               </p>
 
-              <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', marginBottom: '3.5rem' }}>
-                <button onClick={() => navigate('detect')}
+              <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', justifyContent: 'center', marginBottom: '3.5rem' }}>
+                <button onClick={() => navigate('detect')} className="btn-primary"
                   style={{ background: ink, border: `1px solid ${ink}`, color: '#fff', padding: '0.8rem 1.6rem', borderRadius: '6px', fontSize: '0.95rem', fontWeight: 600, cursor: 'pointer', minHeight: '46px', fontFamily: 'inherit' }}>
                   Analyze an image
                 </button>
-                <button onClick={() => navigate('how')}
+                <button onClick={() => navigate('how')} className="btn-ghost"
                   style={{ background: '#fff', border: '1px solid #c9c9c9', color: ink, padding: '0.8rem 1.6rem', borderRadius: '6px', fontSize: '0.95rem', fontWeight: 500, cursor: 'pointer', minHeight: '46px', fontFamily: 'inherit' }}>
                   How it works
                 </button>
               </div>
 
-              <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(190px,1fr))', gap: '0 2rem', width: '100%', borderTop: `1px solid ${border}`, paddingTop: '1.5rem' }}>
+              <ul style={{ listStyle: 'none', padding: 0, margin: '0 auto', display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(190px,1fr))', gap: '0 2rem', width: '100%', maxWidth: '880px', borderTop: `1px solid ${border}`, paddingTop: '1.5rem', textAlign: 'left' }}>
                 {[['ML ensemble', 'with graceful model failover'], ['Five signal layers', 'EXIF · FFT · C2PA · SynthID'], ['Uncertainty bands', 'we say so when we are unsure'], ['Local-only mode', 'nothing leaves your device']].map(([v, l]) => (
                   <li key={v} style={{ padding: '0.5rem 0' }}>
                     <span style={{ fontWeight: 600, fontSize: '0.92rem', color: ink }}>{v}</span>
@@ -360,22 +376,19 @@ export default function Home() {
 
             <section ref={featuresRef} style={{ padding: 'clamp(2.5rem,6vw,4rem) clamp(1.25rem,5vw,3rem)', maxWidth: '980px', margin: '0 auto', borderTop: `1px solid ${border}` }}>
               <h2 style={{ fontSize: '1.35rem', fontWeight: 700, margin: '0 0 0.5rem', letterSpacing: '-0.02em', opacity: featuresInView ? 1 : 0, transform: featuresInView ? 'none' : 'translateY(12px)', transition: 'opacity 0.5s ease, transform 0.5s ease' }}>What makes this different</h2>
-              <p style={{ color: inkSoft, maxWidth: '560px', lineHeight: 1.7, fontSize: '0.95rem', margin: '0 0 2rem', opacity: featuresInView ? 1 : 0, transition: 'opacity 0.5s ease 0.1s' }}>Most detectors show a number and nothing else. We show the evidence behind the verdict and flag when the evidence is weak.</p>
-              <dl style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(260px,1fr))', gap: '1.75rem 2rem', margin: 0 }}>
+              <p style={{ color: inkSoft, maxWidth: '560px', lineHeight: 1.7, fontSize: '0.95rem', margin: '0 auto 2rem', opacity: featuresInView ? 1 : 0, transition: 'opacity 0.5s ease 0.1s' }}>Most detectors show a number and nothing else. We show the evidence behind the verdict and flag when the evidence is weak. Hover or tap a card to see how it works.</p>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(260px,1fr))', gap: '1rem', margin: 0 }}>
                 {[
-                  ['Evidence, explained', 'Every flagged signal carries a plain-language reason. Open the forensic breakdown and click any badge to learn why it matters.'],
-                  ['Honest uncertainty', 'Results include an explicit probability band. When the layers disagree, the verdict says "uncertain" instead of guessing.'],
-                  ['Survives outages', 'If a model is cold or down, weights redistribute and you get a clearly marked degraded result rather than a crash.'],
-                  ['Private by design', 'Images are analyzed transiently and never stored. Local-only mode keeps sensitive photos entirely on your device.'],
-                  ['URL and batch mode', 'Paste a link or drop up to ten files. Built for fact-checkers working through a thread of suspicious images.'],
-                  ['Shareable reports', 'Generate a privacy-safe report link — results only, no image, expires after seven days.'],
-                ].map(([title, desc], fi) => (
-                  <div key={title} style={{ opacity: featuresInView ? 1 : 0, transform: featuresInView ? 'none' : 'translateY(10px)', transition: `opacity 0.45s ease ${fi * 0.06}s, transform 0.45s ease ${fi * 0.06}s` }}>
-                    <dt style={{ fontWeight: 600, fontSize: '0.95rem', color: ink, marginBottom: '0.4rem', paddingBottom: '0.4rem', borderBottom: '2px solid #161616', display: 'inline-block' }}>{title}</dt>
-                    <dd style={{ margin: 0, color: inkSoft, fontSize: '0.88rem', lineHeight: 1.7 }}>{desc}</dd>
-                  </div>
+                  ['Evidence, explained', 'Every flagged signal carries a plain-language reason.', 'Open the forensic breakdown on any result and click a badge — each one explains which field, byte pattern, or statistic triggered it and why that matters for telling camera photos apart from generator output.'],
+                  ['Honest uncertainty', 'Results include an explicit probability band, not just a raw score.', 'The band widens when detection layers disagree or when evidence is thin. When signals conflict, the verdict says "uncertain" instead of guessing — a detector that never admits doubt is lying to you.'],
+                  ['Survives outages', 'Model failover with weight redistribution.', 'If an inference model is cold, rate-limited, or down, its weight is redistributed across the remaining models and the result is clearly marked "degraded" with a wider band — rather than crashing or silently returning a wrong number.'],
+                  ['Private by design', 'Images are analyzed transiently and never stored.', 'Bytes live in memory only, results are keyed by SHA-256 hash, and shareable reports contain numbers and text — never the image itself. Local-only mode goes further: analysis runs entirely in your browser.'],
+                  ['URL and batch mode', 'Paste a link or drop up to ten files at once.', 'Built for fact-checkers working through a thread of suspicious images. URLs are fetched server-side (bypassing CORS) with SSRF guards; batches run sequentially with per-item status and one-click drill-in.'],
+                  ['Shareable reports', 'A privacy-safe link to any verdict.', 'Generate a report URL that shows the score, uncertainty band, and every detected signal — no image attached, expires after seven days. Safe to paste into a newsroom Slack or a dispute thread.'],
+                ].map(([title, teaser, more], fi) => (
+                  <FeatureCard key={title} title={title} teaser={teaser} more={more} index={fi} inView={featuresInView} />
                 ))}
-              </dl>
+              </div>
               <p style={{ marginTop: '2.5rem' }}>
                 <button onClick={() => navigate('detect')} style={{ background: 'none', border: 'none', color: ink, fontWeight: 600, fontSize: '0.95rem', cursor: 'pointer', padding: 0, textDecoration: 'underline', textUnderlineOffset: '3px', fontFamily: 'inherit' }}>
                   Try it on an image →
@@ -753,6 +766,46 @@ export default function Home() {
           *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important }
         }
       `}</style>
+    </div>
+  )
+}
+
+// ─── Feature card — reveals detail on hover / focus / tap ────────────────────
+function FeatureCard({ title, teaser, more, index, inView }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div
+      tabIndex={0}
+      role="button"
+      aria-expanded={open}
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+      onFocus={() => setOpen(true)}
+      onBlur={() => setOpen(false)}
+      onClick={() => setOpen(o => !o)}
+      style={{
+        position: 'relative', overflow: 'hidden', cursor: 'pointer',
+        border: `1px solid ${open ? '#161616' : '#e3e3e3'}`, borderRadius: '8px',
+        background: open ? '#fafafa' : '#ffffff',
+        padding: '1.1rem 1.15rem', minHeight: '120px', textAlign: 'left',
+        transition: 'border-color 0.2s ease, background 0.2s ease, transform 0.2s ease',
+        transform: open ? 'translateY(-2px)' : 'none',
+        opacity: inView ? 1 : 0,
+      }}
+    >
+      <h3 style={{ margin: '0 0 0.35rem', fontSize: '0.95rem', fontWeight: 600, color: '#161616' }}>{title}</h3>
+      <p style={{ margin: 0, fontSize: '0.85rem', lineHeight: 1.6, color: '#5c5c5c' }}>{teaser}</p>
+      {/* Revealed panel */}
+      <div aria-hidden={!open} style={{
+        position: 'absolute', left: 0, right: 0, bottom: 0,
+        background: '#161616', color: '#f2f2f2', padding: '0.85rem 1.15rem',
+        fontSize: '0.78rem', lineHeight: 1.6,
+        transform: open ? 'translateY(0)' : 'translateY(101%)',
+        transition: 'transform 0.28s ease',
+      }}>
+        {more}
+      </div>
+      <span aria-hidden="true" style={{ position: 'absolute', top: '0.9rem', right: '1rem', fontSize: '0.7rem', color: '#8a8a8a', transition: 'color 0.2s', fontWeight: 600 }}>{open ? '−' : '+'}</span>
     </div>
   )
 }

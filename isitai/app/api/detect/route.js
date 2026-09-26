@@ -1,5 +1,6 @@
 import { analyzeImage, MAX_BYTES } from '../../../lib/analyze'
 import { rateLimit, getClientIp, rateLimitResponse } from '../../../lib/rateLimit'
+import { getCached } from '../../../lib/cache'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
