@@ -13,6 +13,16 @@ const REPORTS = new Map() // id -> { result, createdAt }
 const REPORT_TTL_MS = 7 * 24 * 3600_000
 let lastPurge = Date.now()
 
+// Keep only the fields we trust from a client-supplied result (strip anything
+// unexpected; results never contain image bytes anyway).
+function sanitizeLayers(layers) {
+  if (!layers || typeof layers !== 'object') return {}
+  const pick = l => l && typeof l === 'object'
+    ? { score: l.score, aiScore: l.aiScore, available: l.available, degraded: l.degraded, signals: Array.isArray(l.signals) ? l.signals.slice(0, 40) : [], results: Array.isArray(l.results) ? l.results.slice(0, 8) : [] }
+    : undefined
+  return { models: pick(layers.models), metadata: pick(layers.metadata), dimensions: pick(layers.dimensions), structure: pick(layers.structure), pixels: pick(layers.pixels) }
+}
+
 function purge() {
   const now = Date.now()
   if (now - lastPurge < 60_000) return
@@ -43,6 +53,22 @@ export async function POST(request) {
       buffer = Buffer.from(await image.arrayBuffer())
     } else if (contentType.includes('application/json')) {
       const body = await request.json().catch(() => ({}))
+      // Client can share an already-computed result (from /api/detect) instead
+      // of re-uploading the image — avoids double analysis and double HF calls.
+      if (body.result && typeof body.result === 'object' && typeof body.result.score === 'number') {
+        purge()
+        const base = process.env.NEXT_PUBLIC_SITE_URL || new URL(request.url).origin
+        const id = `${String(body.result.id || 'rpt').slice(0, 16)}-${Math.random().toString(36).slice(2, 8)}`
+        const stored = { ...body.result, shareId: id, layers: sanitizeLayers(body.result.layers) }
+        REPORTS.set(id, { result: stored, createdAt: Date.now() })
+        return Response.json({
+          id,
+          url: `${base}/r/${id}`,
+          expiresInSeconds: Math.round(REPORT_TTL_MS / 1000),
+          score: stored.score,
+          verdict: stored.verdict,
+        })
+      }
       const url = body.url
       if (!url || typeof url !== 'string') return Response.json({ error: 'Provide "url" or upload an image' }, { status: 400 })
       let parsed

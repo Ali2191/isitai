@@ -33,3 +33,14 @@ export function cacheSet(hash, value) {
   }
   store.set(hash, { value, expiresAt: Date.now() + TTL_MS })
 }
+
+// Lookup by the short public id (first 16 hex chars of the SHA-256).
+// Used by GET /api/detect?id=… — returns results only, never images.
+export function getCached(id) {
+  if (!id || typeof id !== 'string') return null
+  for (const [hash, e] of store) {
+    if (e.expiresAt <= Date.now()) { store.delete(hash); continue }
+    if (hash.startsWith(id)) return e.value
+  }
+  return null
+}
