@@ -1,203 +1,142 @@
-import sharp from 'sharp'
+import { analyzeImage, MAX_BYTES } from '../../../lib/analyze'
+import { rateLimit, getClientIp, rateLimitResponse } from '../../../lib/rateLimit'
 
+export const runtime = 'nodejs'
+export const maxDuration = 60
+
+// POST /api/detect  — multipart form with `image` file OR JSON body { url }
 export async function POST(request) {
   try {
-    const formData = await request.formData()
-    const image = formData.get('image')
-    if (!image) return Response.json({ error: 'No image provided' }, { status: 400 })
+    // ── API key auth (optional): raises limits when ISITAI_API_KEY is configured ──
+    const serverKey = process.env.ISITAI_API_KEY
+    const authHeader = request.headers.get('authorization') || ''
+    const bearer = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : null
+    const authenticated = !!(serverKey && bearer && bearer === serverKey)
 
-    const key = process.env.HUGGINGFACE_API_KEY
-    if (!key) return Response.json({ error: 'API key missing' }, { status: 500 })
+    // ── per-IP rate limit ──
+    const ip = getClientIp(request)
+    const limit = authenticated
+      ? Number(process.env.RATE_LIMIT_AUTH || 60)
+      : Number(process.env.RATE_LIMIT_DETECT || 12)
+    const rl = rateLimit(`detect:${authenticated ? 'key' : ip}`, limit, 60_000)
+    if (!rl.ok) return rateLimitResponse(rl.retryAfterSec)
 
-    const rawBuffer = Buffer.from(await image.arrayBuffer())
+    const contentType = request.headers.get('content-type') || ''
+    let buffer = null
+    let mimeType = 'image/jpeg'
+    let source = 'upload'
 
-    // Get dimensions ONLY — do NOT resize before sending to HF
-    // Critical fix: HF inference API handles all preprocessing internally.
-    // Pre-resizing with Sharp was causing result discrepancy vs HF playground.
-    let imageDimensions = { width: 0, height: 0 }
-    let sendBuffer = rawBuffer
-    const mimeType = image.type || 'image/jpeg'
-
-    try {
-      const metadata = await sharp(rawBuffer).metadata()
-      imageDimensions = { width: metadata.width || 0, height: metadata.height || 0 }
-
-      // Only convert format if needed — no resize, no crop, no distortion
-      if (metadata.format && !['jpeg', 'jpg', 'png', 'webp'].includes(metadata.format)) {
-        sendBuffer = await sharp(rawBuffer).jpeg({ quality: 92 }).toBuffer()
+    if (contentType.includes('multipart/form-data')) {
+      const formData = await request.formData()
+      const image = formData.get('image')
+      if (!image || typeof image === 'string') {
+        return Response.json({ error: 'No image provided' }, { status: 400 })
       }
-    } catch (e) {
-      sendBuffer = rawBuffer
-    }
-
-    const dimensionScore = analyzeDimensions(imageDimensions.width, imageDimensions.height)
-
-    // Phase 1: Top 2 models only — sdxl-detector removed
-    // haywoodsloan: 60% weight — highest sensitivity on modern AI outputs
-    // umm-maybe: 40% weight — strong GAN + diverse generator coverage
-    const models = [
-      { name: 'umm-maybe/AI-image-detector', weight: 0.40 },
-      { name: 'haywoodsloan/ai-image-detector-deploy', weight: 0.60 },
-    ]
-
-    const results = await Promise.allSettled(
-      models.map(async (model) => {
-        const res = await fetch(
-          `https://router.huggingface.co/hf-inference/models/${model.name}`,
-          {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${key}`,
-              // Send as original mime type — HF handles its own normalization
-              'Content-Type': mimeType,
-            },
-            body: sendBuffer,
-          }
-        )
-
-        if (!res.ok) {
-          const errText = await res.text()
-          throw new Error(`HTTP ${res.status}: ${errText.slice(0, 120)}`)
-        }
-
-        const text = await res.text()
-        let data
-        try { data = JSON.parse(text) }
-        catch { throw new Error(`Non-JSON response: ${text.slice(0, 80)}`) }
-
-        if (data.error) throw new Error(data.error)
-        if (!Array.isArray(data)) throw new Error(`Unexpected response format`)
-
-        // Normalize label detection — handles both model label conventions
-        const aiEntry = data.find(d => {
-          const label = (d.label || '').toLowerCase()
-          return label.includes('artificial') ||
-                 label.includes('fake') ||
-                 label.includes('ai') ||
-                 label === 'ai-generated' ||
-                 label === 'generated'
-        })
-
-        if (!aiEntry) throw new Error(`No AI label in: ${data.map(d => d.label).join(', ')}`)
-        return {
-          name: model.name,
-          shortName: model.name.split('/')[1],
-          weight: model.weight,
-          aiScore: Math.round(aiEntry.score * 100),
-          rawLabels: data.map(d => ({ label: d.label, score: Math.round(d.score * 100) }))
-        }
-      })
-    )
-
-    const successful = results.filter(r => r.status === 'fulfilled').map(r => r.value)
-    const failed = results.filter(r => r.status === 'rejected').map(r => r.reason?.message)
-
-    if (successful.length === 0) {
-      return Response.json({
-        error: 'All models failed — they may be cold-starting',
-        details: failed
-      }, { status: 500 })
-    }
-
-    // Disagreement-aware weighting
-    const scores = successful.map(m => m.aiScore)
-    const spread = successful.length > 1 ? Math.max(...scores) - Math.min(...scores) : 0
-    const disagreement = spread > 25
-
-    let adjustedModels = [...successful]
-
-    if (disagreement && spread > 35 && successful.length > 1) {
-      // Boost haywoodsloan when disagreement is strong — it has highest sensitivity
-      adjustedModels = adjustedModels.map(m => ({
-        ...m,
-        effectiveWeight: m.name.includes('haywoodsloan') ? 0.75 : 0.25,
-        weightAdjusted: m.name.includes('haywoodsloan'),
-      }))
+      if (!image.type || !image.type.startsWith('image/')) {
+        return Response.json({ error: 'File is not an image' }, { status: 415 })
+      }
+      if (image.size > MAX_BYTES) {
+        return Response.json({ error: `Image too large — limit is ${MAX_BYTES / 1024 / 1024} MB` }, { status: 413 })
+      }
+      mimeType = image.type
+      buffer = Buffer.from(await image.arrayBuffer())
+    } else if (contentType.includes('application/json')) {
+      // URL mode: server fetches the image (bypasses browser CORS on images)
+      const body = await request.json().catch(() => ({}))
+      const url = body.url
+      if (!url || typeof url !== 'string') {
+        return Response.json({ error: 'Provide an image "url" or upload a file' }, { status: 400 })
+      }
+      let parsed
+      try { parsed = new URL(url) } catch {
+        return Response.json({ error: 'Invalid URL' }, { status: 400 })
+      }
+      if (!/^https?:$/.test(parsed.protocol)) {
+        return Response.json({ error: 'Only http(s) URLs are supported' }, { status: 400 })
+      }
+      const fetched = await fetchImageFromUrl(url)
+      if ('error' in fetched) return Response.json(fetched.body, { status: fetched.status })
+      buffer = fetched.buffer
+      mimeType = fetched.mimeType
+      source = 'url'
     } else {
-      adjustedModels = adjustedModels.map(m => ({ ...m, effectiveWeight: m.weight, weightAdjusted: false }))
+      return Response.json({ error: 'Send multipart form (image) or JSON { url }' }, { status: 415 })
     }
 
-    const totalWeight = adjustedModels.reduce((s, m) => s + m.effectiveWeight, 0)
-    const modelCombined = Math.round(
-      adjustedModels.reduce((s, m) => s + (m.aiScore * (m.effectiveWeight / totalWeight)), 0)
-    )
-
-    // Confidence: lower when models disagree strongly
-    const mean = modelCombined
-    const variance = successful.reduce((s, m) => s + Math.pow(m.aiScore - mean, 2), 0) / successful.length
-    const stdDev = Math.sqrt(variance)
-    const confidence = stdDev < 8 ? 'high' : stdDev < 22 ? 'medium' : 'low'
-
-    return Response.json({
-      combined: modelCombined,
-      modelResults: adjustedModels.map(m => ({
-        name: m.name,
-        shortName: m.shortName,
-        weight: m.effectiveWeight,
-        weightAdjusted: m.weightAdjusted,
-        aiScore: m.aiScore,
-      })),
-      disagreement,
-      disagreementSpread: spread,
-      confidence,
-      dimensionScore,
-      imageDimensions,
-      modelsUsed: successful.length,
-      failedModels: failed,
-    })
-
+    const result = await analyzeImage(buffer, mimeType)
+    return Response.json({ ...result, source, rateRemaining: rl.remaining })
   } catch (error) {
-    return Response.json({ error: error.message }, { status: 500 })
+    return Response.json({ error: String(error?.message || error).slice(0, 200) }, { status: 500 })
   }
 }
 
-function analyzeDimensions(width, height) {
-  if (!width || !height) return { score: 0, signals: [], confidence: 'none' }
-  const signals = []
-  let suspicionScore = 0
+// SSRF guard: reject localhost/private/link-local ranges before fetching
+const BLOCKED_HOST_RE = /^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|0\.|\[?::1\]?|\[?f[cd])/i
 
-  const aiSizes = [
-    { w: 512, h: 512, label: 'SD 1.x standard', c: 'high' },
-    { w: 768, h: 768, label: 'SD high-res', c: 'high' },
-    { w: 1024, h: 1024, label: 'SDXL / DALL-E square', c: 'high' },
-    { w: 1024, h: 1792, label: 'DALL-E 3 portrait', c: 'high' },
-    { w: 1792, h: 1024, label: 'DALL-E 3 landscape', c: 'high' },
-    { w: 1344, h: 768, label: 'Midjourney landscape', c: 'high' },
-    { w: 768, h: 1344, label: 'Midjourney portrait', c: 'high' },
-    { w: 1216, h: 832, label: 'Midjourney wide', c: 'medium' },
-    { w: 832, h: 1216, label: 'Midjourney tall', c: 'medium' },
-    { w: 512, h: 768, label: 'SD portrait', c: 'medium' },
-    { w: 768, h: 512, label: 'SD landscape', c: 'medium' },
-  ]
-
-  const exactMatch = aiSizes.find(s => s.w === width && s.h === height)
-  if (exactMatch) {
-    signals.push({ label: `Exact match: ${exactMatch.label} (${width}×${height})`, suspicious: true })
-    suspicionScore += exactMatch.c === 'high' ? 55 : 35
-  } else {
-    const isMult128 = n => n % 128 === 0
-    const isMult64 = n => n % 64 === 0
-    if (isMult128(width) && isMult128(height)) {
-      signals.push({ label: `Multiples of 128 — common AI output size`, suspicious: true })
-      suspicionScore += 20
-    } else if (isMult64(width) && isMult64(height)) {
-      signals.push({ label: `Multiples of 64 — possible AI output`, suspicious: true })
-      suspicionScore += 10
-    } else {
-      signals.push({ label: `Irregular dimensions — real camera pattern (${width}×${height})`, suspicious: false })
-      suspicionScore -= 8
+async function fetchImageFromUrl(url) {
+  const fail = (msg, status) => ({ error: msg, status, body: { error: msg } })
+  let hostname
+  try { hostname = new URL(url).hostname } catch { return fail('Invalid URL', 400) }
+  if (BLOCKED_HOST_RE.test(hostname)) return fail('Fetching internal/private addresses is not allowed', 400)
+  try {
+    const controller = new AbortController()
+    const t = setTimeout(() => controller.abort(), 12_000)
+    const res = await fetch(url, {
+      signal: controller.signal,
+      redirect: 'manual',
+      headers: { 'User-Agent': 'isitai-detector/1.0', Accept: 'image/*' },
+    })
+    // follow up to 2 redirects manually, re-checking each hop
+    let finalRes = res
+    let hops = 0
+    while ([301, 302, 303, 307, 308].includes(finalRes.status) && hops < 2) {
+      const loc = finalRes.headers.get('location')
+      if (!loc) break
+      const next = new URL(loc, url).toString()
+      let nh
+      try { nh = new URL(next).hostname } catch { clearTimeout(t); return fail('Invalid redirect target', 422) }
+      if (BLOCKED_HOST_RE.test(nh)) { clearTimeout(t); return fail('Redirect points to a private address', 400) }
+      finalRes = await fetch(next, { signal: controller.signal, redirect: 'manual', headers: { Accept: 'image/*' } })
+      hops++
     }
+    clearTimeout(t)
+    if (!finalRes.ok) return fail(`Remote server returned ${finalRes.status}`, 422)
+    const ct = finalRes.headers.get('content-type') || 'image/jpeg'
+    if (!ct.startsWith('image/')) return fail('URL did not return an image', 415)
+    const ab = await finalRes.arrayBuffer()
+    if (ab.byteLength > MAX_BYTES) return fail(`Remote image too large (${Math.round(ab.byteLength / 1024 / 1024)} MB, limit ${MAX_BYTES / 1024 / 1024} MB)`, 413)
+    if (ab.byteLength < 100) return fail('Remote image appears empty', 422)
+    return { buffer: Buffer.from(ab), mimeType: ct.split(';')[0].trim() }
+  } catch (e) {
+    return fail(`Could not fetch URL: ${String(e?.message || e).slice(0, 120)}`, 422)
   }
+}
 
-  if (width * height > 12_000_000) {
-    signals.push({ label: `${Math.round(width * height / 1_000_000)}MP — high-res camera photo`, suspicious: false })
-    suspicionScore -= 12
+// GET /api/detect?id=… — fetch a cached result by id (results only, never images)
+// Without ?id: public API documentation + live status
+export async function GET(request) {
+  const { searchParams } = new URL(request.url)
+  const id = searchParams.get('id')
+  if (id) {
+    const hit = getCached(id)
+    if (!hit) return Response.json({ error: 'No cached result for that id. Results are kept for 15 minutes.' }, { status: 404 })
+    return Response.json({ ...hit, cached: true })
   }
-
-  return {
-    score: Math.max(0, Math.min(90, suspicionScore)),
-    signals,
-    confidence: exactMatch ? 'high' : suspicionScore > 15 ? 'medium' : 'low',
-    dimensions: `${width}×${height}`
-  }
+  return Response.json({
+    name: 'IsItAI Detection API',
+    version: 1,
+    usage: {
+      endpoint: 'POST /api/detect',
+      upload: 'multipart/form-data with field "image"',
+      urlMode: 'application/json with { "url": "https://…/image.jpg" }',
+      apiKeyHeader: 'Authorization: Bearer $ISITAI_API_KEY (optional — enables higher limits)',
+      response: '{ score, band, verdict, layers: { models, metadata, dimensions, structure, pixels } }',
+    },
+    examples: {
+      curlUpload: 'curl -F "image=@photo.jpg" https://isitai-gilt.vercel.app/api/detect',
+      curlUrl: 'curl -X POST -H "Content-Type: application/json" -d \'{"url":"https://example.com/a.jpg"}\' https://isitai-gilt.vercel.app/api/detect',
+    },
+    limits: { anonymous: '12/min per IP', authenticated: '60/min per key', maxBytes: MAX_BYTES },
+    privacy: 'Images are analyzed transiently and never stored.',
+  })
 }
