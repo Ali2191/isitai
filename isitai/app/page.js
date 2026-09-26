@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react'
 import Link from 'next/link'
+import HeatmapOverlay from './components/HeatmapOverlay'
 
 // ─── Plain monochrome palette. Color is reserved for nothing; hierarchy comes
 //     from weight, size and hairline rules. ────────────────────────────────────
@@ -251,7 +252,7 @@ export default function Home() {
     try {
       await fetch('/api/feedback', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: result.id, score: result.score, level: result.verdict?.level, degraded: !!result.degraded, modelsUsed: result.layers?.models?.results?.length || 0, verdict })
+        body: JSON.stringify({ id: result.id, score: result.score, level: result.verdict?.level, degraded: !!result.degraded, modelsUsed: result.layers?.models?.results?.length || 0, judgement: verdict })
       })
     } catch { /* non-critical */ }
     setFeedbackSent(verdict)
@@ -601,6 +602,13 @@ export default function Home() {
                     {result_.source === 'url' && <span>via URL</span>}
                   </div>
                 </div>
+
+                {/* Region-level heatmap overlay — zoom into flagged regions */}
+                {imagePreview && !result_.local && (result_.saliency?.cells?.length || result_.layers?.anatomy?.boxes?.length) > 0 && (
+                  <div style={{ padding: '0 1.5rem 0.5rem' }}>
+                    <HeatmapOverlay src={imagePreview} result={result_} />
+                  </div>
+                )}
 
                 {/* Actions: details / share / feedback */}
                 <div style={{ padding: '1rem 1.5rem', background: surface }}>
