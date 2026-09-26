@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "IsItAI — AI Image Detector",
+  "version": "1.0.0",
+  "description": "Right-click any image on the web → detect with IsItAI. Multi-layer forensic analysis: PRNU noise, JPEG double-compression, anatomy checks, saliency map and ML ensemble.",
+  "homepage_url": "https://isitai-gilt.vercel.app",
+  "permissions": ["contextMenus", "storage"],
+  "host_permissions": ["https://*/*"],
+  "background": { "service_worker": "background.js" },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "IsItAI — check the last image you right-clicked, or paste a URL"
+  },
+  "icons": { "16": "icons/icon.png", "48": "icons/icon.png", "128": "icons/icon.png" }
+}
