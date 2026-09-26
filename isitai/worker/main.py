@@ -4,7 +4,7 @@ Deploy on Modal / RunPod free tier and point the web app at it with:
     MODEL_WORKER_URL=https://<your-worker-url>  MODEL_WORKER_TOKEN=<secret>
 
 Endpoints
-  GET  /health          -> {ok, models:[...]}      (used by /status)
+  GET  /health          -> {ok, models:[...]}      (consumed by the health feed at /api/status)
   POST /classify        image bytes -> {aiScore}    CNNDet-style ensemble
   POST /synthid         image bytes -> {detected}   SynthID detector (optional)
   POST /text-classify   {text}      -> {aiScore}    Hive-adjacent RoBERTa

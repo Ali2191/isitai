@@ -774,8 +774,8 @@ export default function Home() {
               <Link href="/midjourney-vs-dalle-detector" style={{ display: 'block', color: textSoft, fontSize: '0.83rem', textDecoration: 'none', padding: '3px 0', marginBottom: '4px' }}>Midjourney vs DALL-E</Link>
               <Link href="/ai-video-deepfake-guide" style={{ display: 'block', color: textSoft, fontSize: '0.83rem', textDecoration: 'none', padding: '3px 0', marginBottom: '4px' }}>Deepfakes & video</Link>
               <Link href="/provenance" style={{ display: 'block', color: textSoft, fontSize: '0.83rem', textDecoration: 'none', padding: '3px 0', marginBottom: '4px' }}>C2PA provenance viewer</Link>
-              <Link href="/benchmark" style={{ display: 'block', color: textSoft, fontSize: '0.83rem', textDecoration: 'none', padding: '3px 0', marginBottom: '4px' }}>Public benchmark</Link>
-              <Link href="/status" style={{ display: 'block', color: textSoft, fontSize: '0.83rem', textDecoration: 'none', padding: '3px 0' }}>Service status</Link>
+
+
             </div>
             <div>
               <div style={{ fontSize: '0.68rem', fontWeight: 600, color: textMuted, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '0.75rem' }}>Legal</div>
