@@ -714,7 +714,7 @@ async function runModels(sendBuffer, mimeType) {
 }
 
 // ─── Fusion + uncertainty ────────────────────────────────────────────────────
-function fuse(modelCombined, exif, dim, jpeg, pix, metaSuspicious, noise, anatomy) {
+export function fuse(modelCombined, exif, dim, jpeg, pix, metaSuspicious, noise, anatomy) {
   const ew = exif?.exifWeight || 0
   const dw = dim?.confidence === 'high' ? 0.12 : dim?.confidence === 'medium' ? 0.06 : 0
   const pw = pix?.confidence === 'high' ? 0.10 : pix?.confidence === 'medium' ? 0.05 : 0
@@ -743,7 +743,7 @@ function fuse(modelCombined, exif, dim, jpeg, pix, metaSuspicious, noise, anatom
   return clamp(score, 1, 99)
 }
 
-function uncertaintyBand(score, modelConfidence, layerConfs, degraded, modelsAvailable) {
+export function uncertaintyBand(score, modelConfidence, layerConfs, degraded, modelsAvailable) {
   // Wider band when layers disagree/confidence low
   const confRank = { high: 0, medium: 1, low: 2, none: 3, very_low: 3 }
   const worst = [...layerConfs.map(c => confRank[c] ?? 3), modelConfidence ? confRank[modelConfidence] : 3, degraded ? 3 : 0]
@@ -756,7 +756,7 @@ function uncertaintyBand(score, modelConfidence, layerConfs, degraded, modelsAva
   return { lo, hi, label: `${lo}–${hi}%`, width: hi - lo }
 }
 
-function computeVerdict(score, band, degraded, modelsAvailable) {
+export function computeVerdict(score, band, degraded, modelsAvailable) {
   const overlapUncertain = band.lo < 60 && band.hi >= 38
   if (!modelsAvailable && score >= 60) return { level: 'uncertain', emoji: '🤔', color: '#eab308', line1: 'Leans AI-generated — but ML models were unavailable' }
   if (!modelsAvailable && score < 60) return { level: 'likely-real', emoji: '✅', color: '#22c55e', line1: 'No strong AI indicators in local forensics (models offline)' }
