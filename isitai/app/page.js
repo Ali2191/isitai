@@ -1,488 +1,422 @@
 'use client'
-import { useState, useRef, useEffect, useCallback } from 'react'
-import Link from 'next/link'
-import { runLocalAnalysis } from '../lib/localDetect'
 
-// ─── Verdict copy (server returns level/emoji/color/line1; we add detail) ───
+import { useState, useRef, useEffect } from 'react'
+import Link from 'next/link'
+
+// ─── Plain monochrome palette. Color is reserved for nothing; hierarchy comes
+//     from weight, size and hairline rules. ────────────────────────────────────
+const ink = '#161616'          // primary text
+const inkSoft = '#5c5c5c'      // secondary text
+const inkFaint = '#8a8a8a'     // tertiary / captions
+const line = '#e3e3e3'         // hairline borders
+const surface = '#fafafa'      // subtle fills
+
+// ─── Verdict copy + plain-text markers (server returns level/line1) ──────────
 function verdictText(result) {
   const s = result.score, v = result.verdict || {}
   switch (v.level) {
-    case 'definitive-ai': return { line2: `High-confidence evidence across multiple layers puts AI probability at ${s}% (band ${result.band?.label}).`, sub: 'Strong generator fingerprints were found in metadata, pixels and/or model scores.', glow: 'rgba(239,68,68,0.15)' }
-    case 'likely-ai': return { line2: `We estimate a ${s}% chance this image is AI-generated (uncertainty band ${result.band?.label}).`, sub: 'More evidence points toward generation than authentic capture.', glow: 'rgba(249,115,22,0.15)' }
-    case 'uncertain': return { line2: `Signals are mixed — ${s}% lean toward AI, with an uncertainty band of ${result.band?.label}.`, sub: 'This image may be AI-enhanced, heavily edited, re-uploaded, or from an unfamiliar generator.', glow: 'rgba(234,179,8,0.12)' }
-    case 'likely-real': return { line2: `We estimate only a ${s}% chance of AI generation (band ${result.band?.label}).`, sub: 'Most detection layers found no significant AI indicators.', glow: 'rgba(34,197,94,0.15)' }
-    case 'definitive-real': return { line2: `Nearly all forensic layers agree: ${100 - s >= 90 ? '>90' : 100 - s}% confidence this is a genuine camera photo.`, sub: 'Rich provenance metadata and natural pixel statistics detected.', glow: 'rgba(34,197,94,0.15)' }
-    default: return { line2: `AI probability: ${s}% (band ${result.band?.label}).`, sub: '', glow: 'rgba(124,58,237,0.15)' }
+    case 'definitive-ai': return { line2: `High-confidence evidence across multiple layers puts AI probability at ${s}% (band ${result.band?.label}).`, sub: 'Strong generator fingerprints were found in metadata, pixels and/or model scores.' }
+    case 'likely-ai': return { line2: `We estimate a ${s}% chance this image is AI-generated (uncertainty band ${result.band?.label}).`, sub: 'More evidence points toward generation than authentic capture.' }
+    case 'uncertain': return { line2: `Signals are mixed — ${s}% lean toward AI, with an uncertainty band of ${result.band?.label}.`, sub: 'This image may be AI-enhanced, heavily edited, re-uploaded, or from an unfamiliar generator.' }
+    case 'likely-real': return { line2: `We estimate only a ${s}% chance of AI generation (band ${result.band?.label}).`, sub: 'Most detection layers found no significant AI indicators.' }
+    case 'definitive-real': return { line2: `Nearly all forensic layers agree: ${100 - s >= 90 ? '>90' : 100 - s}% confidence this is a genuine camera photo.`, sub: 'Rich provenance metadata and natural pixel statistics detected.' }
+    default: return { line2: `AI probability: ${s}% (band ${result.band?.label}).`, sub: '' }
   }
 }
+
+const VMARK = {
+  'definitive-ai': { mark: '[!]', note: 'High AI probability' },
+  'likely-ai': { mark: '[!]', note: 'Leans AI-generated' },
+  'uncertain': { mark: '[?]', note: 'Mixed evidence' },
+  'likely-real': { mark: '[OK]', note: 'Likely a real photo' },
+  'definitive-real': { mark: '[OK]', note: 'Genuine camera photo' },
+}
+const vmark = level => VMARK[level] || { mark: '[?]', note: 'No verdict' }
 
 // ─── Session history (localStorage, results only — never images) ─────────────
 const HISTORY_KEY = 'isitai_history_v1'
 function loadHistory() {
-  try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]') } catch { return [] }
-}
-function pushHistory(result, name) {
-  try {
-    const entry = { id: result.id, score: result.score, level: result.verdict?.level, emoji: result.verdict?.emoji, color: result.verdict?.color, line1: result.verdict?.line1, local: !!result.local, at: result.analyzedAt || Date.now(), name: String(name || '').slice(0, 60) }
-    const h = [entry, ...loadHistory()].slice(0, 12)
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(h))
-    return h
-  } catch { return loadHistory() }
+  try { return JSON.parse(localStorage.getItem(HISTORY_KEY)) || [] } catch { return [] }
 }
 
-// ─── Logo ─────────────────────────────────────────────────────────────────────
-const Logo = ({ size = 32 }) => (
-  <svg width={size} height={size} viewBox="0 0 32 32" fill="none" aria-hidden="true">
-    <defs><linearGradient id="lg2" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stopColor="#7c3aed" /><stop offset="100%" stopColor="#06b6d4" /></linearGradient></defs>
-    <rect width="32" height="32" rx="8" fill="url(#lg2)" />
-    <ellipse cx="16" cy="15" rx="8.5" ry="5.5" fill="none" stroke="white" strokeWidth="1.8" />
-    <circle cx="16" cy="15" r="2.8" fill="white" />
-    <circle cx="16" cy="15" r="1.1" fill="url(#lg2)" />
-    <line x1="21.5" y1="20.5" x2="25.5" y2="24.5" stroke="white" strokeWidth="2.2" strokeLinecap="round" />
-    <circle cx="10" cy="10" r="1" fill="rgba(255,255,255,0.6)" />
-    <circle cx="22" cy="10" r="0.7" fill="rgba(255,255,255,0.4)" />
-  </svg>
-)
-
-function useInView(ref, options = {}) {
-  const [inView, setInView] = useState(false)
-  useEffect(() => {
-    if (!ref.current) return
-    const obs = new IntersectionObserver(([e]) => { if (e.isIntersecting) setInView(true) }, { threshold: 0.15, ...options })
-    obs.observe(ref.current)
-    return () => obs.disconnect()
-  }, [])
-  return inView
-}
-
-// ─── Signal badge with explanation tooltip ────────────────────────────────────
-function SignalChip({ s }) {
-  const [open, setOpen] = useState(false)
-  return (
-    <span style={{ position: 'relative', display: 'inline-block' }}>
-      <button type="button" onClick={() => s.why && setOpen(o => !o)} aria-expanded={open ? 'true' : 'false'}
-        style={{ fontSize: '0.7rem', padding: '3px 8px', borderRadius: '20px', background: s.suspicious ? 'rgba(239,68,68,0.1)' : 'rgba(34,197,94,0.1)', color: s.suspicious ? '#fca5a5' : '#86efac', border: `1px solid ${s.suspicious ? 'rgba(239,68,68,0.2)' : 'rgba(34,197,94,0.2)'}`, fontWeight: 500, cursor: s.why ? 'pointer' : 'default', fontFamily: 'inherit' }}>
-        {s.suspicious ? '⚠ ' : '✓ '}{s.label}
-      </button>
-      {open && s.why && (
-        <span role="tooltip" style={{ position: 'absolute', zIndex: 30, top: '110%', left: 0, width: 'min(260px, 70vw)', background: '#18181b', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 10, padding: '10px 12px', fontSize: '0.72rem', color: '#d4d4d8', lineHeight: 1.55, boxShadow: '0 8px 24px rgba(0,0,0,0.5)', display: 'block', textAlign: 'left' }}>
-          {s.why}
-        </span>
-      )}
-    </span>
-  )
-}
-
-// ─── Layer block in forensic breakdown ────────────────────────────────────────
-function LayerBlock({ icon, title, layer, color }) {
-  if (!layer || !(layer.signals || []).length) return null
-  const sc = layer.score ?? layer.aiScore
-  return (
-    <div style={{ marginTop: '0.8rem', paddingTop: '0.8rem', borderTop: '1px solid rgba(255,255,255,0.08)' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', marginBottom: '6px' }}>
-        <span style={{ color, fontWeight: 600 }}>{icon} {title}</span>
-        {sc !== undefined && <span style={{ color: sc >= 50 ? '#f87171' : '#4ade80', fontWeight: 700 }}>{sc}% suspicious</span>}
-      </div>
-      {sc !== undefined && (
-        <div style={{ background: 'rgba(255,255,255,0.06)', borderRadius: '4px', height: '6px', overflow: 'hidden', marginBottom: '8px' }}>
-          <div style={{ height: '100%', background: sc >= 50 ? 'linear-gradient(90deg,#ef4444,#f97316)' : 'linear-gradient(90deg,#22c55e,#10b981)', borderRadius: '4px', width: `${sc}%`, transition: 'width 0.9s cubic-bezier(0.34,1.2,0.64,1)' }} />
-        </div>
-      )}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px' }}>
-        {layer.signals.map((s, i) => <SignalChip key={i} s={s} />)}
-      </div>
-    </div>
-  )
-}
-
-// ─── Main App ─────────────────────────────────────────────────────────────────
-export default function App() {
+export default function Home() {
   const [page, setPage] = useState('home')
-  const [animating, setAnimating] = useState(false)
+  const [mode, setMode] = useState('upload')
   const [imageFile, setImageFile] = useState(null)
   const [imagePreview, setImagePreview] = useState(null)
-  const [isDragging, setIsDragging] = useState(false)
-  const [isLoading, setIsLoading] = useState(false)
-  const [loadingStep, setLoadingStep] = useState(0)
-  const [scanAnim, setScanAnim] = useState(false)
+  const [urlInput, setUrlInput] = useState('')
   const [result, setResult] = useState(null)
+  const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState(null)
-  const [activeHow, setActiveHow] = useState(0)
-  const [displayScore, setDisplayScore] = useState(0)
+  const [isDragging, setIsDragging] = useState(false)
   const [showDetails, setShowDetails] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
-  // New feature state
-  const [mode, setMode] = useState('upload')            // upload | url | batch
-  const [urlInput, setUrlInput] = useState('')
-  const [batchFiles, setBatchFiles] = useState([])       // [{file,name,preview,status,result,error}]
+  const [displayScore, setDisplayScore] = useState(0)
+  const [activeHow, setActiveHow] = useState(0)
+  const [loadingStep, setLoadingStep] = useState(0)
+  const [scanAnim, setScanAnim] = useState(false)
+  const [history, setHistory] = useState([])
+  const [batchFiles, setBatchFiles] = useState([])
   const [batchIndex, setBatchIndex] = useState(-1)
   const [localMode, setLocalMode] = useState(false)
-  const [shareUrl, setShareUrl] = useState(null)
   const [sharing, setSharing] = useState(false)
+  const [shareUrl, setShareUrl] = useState(null)
   const [feedbackSent, setFeedbackSent] = useState(null)
-  const [history, setHistory] = useState([])
   const fileInputRef = useRef(null)
   const batchInputRef = useRef(null)
-  const scoreTimerRef = useRef(null)
   const featuresRef = useRef(null)
-  const featuresInView = useInView(featuresRef)
+  const [featuresInView, setFeaturesInView] = useState(false)
+
+  useEffect(() => {
+    const el = featuresRef.current
+    if (!el) return
+    const obs = new IntersectionObserver(([e]) => e.isIntersecting && setFeaturesInView(true), { threshold: 0.12 })
+    obs.observe(el)
+    return () => obs.disconnect()
+  }, [page])
+
+  useEffect(() => {
+    if (!result) return
+    let raf, start = null
+    const dur = 700
+    const step = ts => {
+      if (!start) start = ts
+      setDisplayScore(Math.min(100, Math.round((ts - start) / dur * 100)))
+      if (ts - start < dur) raf = requestAnimationFrame(step)
+    }
+    cancelAnimationFrame(raf)
+    setDisplayScore(0)
+    raf = requestAnimationFrame(step)
+    return () => cancelAnimationFrame(raf)
+  }, [result])
+
+  useEffect(() => {
+    if (!isLoading) { setScanAnim(false); return }
+    setScanAnim(true)
+    const t = setTimeout(() => setScanAnim(false), 4000)
+    return () => clearTimeout(t)
+  }, [isLoading])
+
+  useEffect(() => {
+    if (!isLoading) { setLoadingStep(0); return }
+    const timers = [setTimeout(() => setLoadingStep(1), 300), setTimeout(() => setLoadingStep(2), 1200)]
+    return () => timers.forEach(clearTimeout)
+  }, [isLoading])
 
   useEffect(() => { setHistory(loadHistory()) }, [])
 
-  const accent = '#7c3aed'
-  const accentCyan = '#06b6d4'
-  const bg = '#0a0a0a'
-  const bg2 = '#111111'
-  const border = 'rgba(255,255,255,0.08)'
-  const textPrimary = '#f4f4f5'
-  const textMuted = '#71717a'
-  const textSoft = '#a1a1aa'
+  const bg = '#ffffff'
+  const border = line
+  const textPrimary = ink
+  const textMuted = inkFaint
+  const textSoft = inkSoft
   const loadingSteps = ['Preparing image', 'Running models + forensics', 'Fusing signals']
 
-  const navigate = (to) => {
-    if (to === page || animating) return
-    setMenuOpen(false); setAnimating(true)
-    setTimeout(() => { setPage(to); setAnimating(false); window.scrollTo({ top: 0 }) }, 280)
+  const navigate = p => {
+    setPage(p); setMenuOpen(false); setShowDetails(false); setShareUrl(null); setFeedbackSent(null)
+    if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'instant' })
   }
 
-  const clearImage = () => { setImageFile(null); setImagePreview(null); setResult(null); setError(null); setShareUrl(null); setFeedbackSent(null); setShowDetails(false) }
-
-  const handleFile = (file) => {
-    if (!file || !file.type.startsWith('image/')) { setError('Please choose an image file (PNG, JPG, WEBP).'); return }
-    if (file.size > 20 * 1024 * 1024) { setError('Image too large — limit is 20 MB.'); return }
-    setImageFile(file); setImagePreview(URL.createObjectURL(file))
-    setResult(null); setError(null); setShareUrl(null); setFeedbackSent(null); setShowDetails(false)
+  function pushHistory(res, name) {
+    const entry = { id: res.id, score: res.score, level: res.verdict?.level, line1: res.verdict?.line1, local: !!res.local, at: res.analyzedAt || Date.now(), name: String(name || '').slice(0, 60) }
+    const next = [entry, ...loadHistory()].slice(0, 12)
+    try { localStorage.setItem(HISTORY_KEY, JSON.stringify(next)) } catch { /* storage full/blocked */ }
+    setHistory(next)
   }
 
-  const animateCounter = (target) => {
-    if (scoreTimerRef.current) clearInterval(scoreTimerRef.current)
-    setDisplayScore(0); let cur = 0
-    scoreTimerRef.current = setInterval(() => {
-      cur = Math.min(target, cur + Math.max(1, Math.ceil(target / 35)))
-      setDisplayScore(cur)
-      if (cur >= target) clearInterval(scoreTimerRef.current)
-    }, 22)
+  const handleFile = f => {
+    if (!f) return
+    if (!f.type.startsWith('image/')) { setError('Please select an image file.'); return }
+    if (f.size > 20 * 1024 * 1024) { setError('Image too large (max 20 MB).'); return }
+    setError(null); setImageFile(f); setResult(null); setFeedbackSent(null); setShareUrl(null)
+    const r = new FileReader()
+    r.onload = e => setImagePreview(e.target.result)
+    r.readAsDataURL(f)
   }
 
-  const presentResult = (data, fileName) => {
-    setScanAnim(false); setResult(data); setIsLoading(false)
-    animateCounter(data.score)
-    setHistory(pushHistory(data, fileName))
+  const clearImage = () => { setImageFile(null); setImagePreview(null); setResult(null); setFeedbackSent(null); setShareUrl(null) }
+
+  async function analyzeImage(file, url) {
+    const form = new FormData()
+    if (file) form.append('image', file)
+    else if (url) form.append('imageUrl', url)
+    const res = await fetch('/api/analyze', { method: 'POST', body: form })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || 'Analysis failed.')
+    return data
   }
 
-  const detectError = async message => { setError(message); setScanAnim(false); setIsLoading(false) }
+  async function analyzeLocal(file) {
+    const { detectLocally } = await import('../lib/localDetect')
+    return detectLocally(file)
+  }
 
   const handleDetect = async () => {
-    setError(null); setResult(null); setShareUrl(null); setFeedbackSent(null); setShowDetails(false)
-    setIsLoading(true); setLoadingStep(0); setScanAnim(true); setDisplayScore(0)
-    let step = 0
-    const iv = setInterval(() => { step++; if (step < loadingSteps.length) setLoadingStep(step) }, 1100)
-
-    // ── Local-only mode: everything stays in the browser ──
-    if (localMode) {
-      if (!imageFile) { clearInterval(iv); await detectError('Choose an image first.') ; return }
-      try {
-        const data = await runLocalAnalysis(imageFile)
-        clearInterval(iv); setLoadingStep(2)
-        setTimeout(() => presentResult(data, imageFile.name), 300)
-      } catch (e) { clearInterval(iv); await detectError('Local analysis failed: ' + String(e?.message || e).slice(0, 120)) }
-      return
-    }
-
+    if (mode === 'url' && !urlInput.trim()) { setError('Please enter an image URL.'); return }
+    if (mode === 'upload' && !imageFile) { setError('Please upload an image first.'); return }
+    if (localMode && mode === 'url') { setError('Local-only mode works with uploaded files, not URLs. Turn it off to analyze a link.'); return }
+    setIsLoading(true); setError(null); setResult(null); setShowDetails(false); setFeedbackSent(null); setShareUrl(null)
     try {
-      let res
-      if (mode === 'url') {
-        if (!/^https?:\/\//i.test(urlInput.trim())) { clearInterval(iv); await detectError('Enter a full http(s) image URL.'); return }
-        res = await fetch('/api/detect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: urlInput.trim() }) })
-      } else {
-        if (!imageFile) { clearInterval(iv); await detectError('Choose an image first.'); return }
-        const fd = new FormData(); fd.append('image', imageFile)
-        res = await fetch('/api/detect', { method: 'POST', body: fd })
-      }
-      const data = await res.json()
-      clearInterval(iv); setLoadingStep(2)
-      if (!res.ok || data.error) { await detectError(data.error || `Request failed (${res.status})${res.status === 429 ? ' — try again in ' + (data.retryAfter || 5) + 's' : ''}`); return }
-      setTimeout(() => presentResult(data, mode === 'url' ? urlInput.split('/').pop() : imageFile?.name), 250)
-    } catch { clearInterval(iv); await detectError('Connection failed — please try again.') }
-  }
-
-  // ── Batch analysis (sequential to respect rate limits) ──
-  const handleBatch = async () => {
-    if (!batchFiles.length || localMode) return
-    setError(null); setIsLoading(true); setBatchIndex(0)
-    const next = batchFiles.map(b => ({ ...b, status: 'pending', result: null, error: null }))
-    setBatchFiles(next)
-    for (let i = 0; i < next.length; i++) {
-      setBatchIndex(i)
-      const b = next[i]
-      if (b.kind === 'file') {
-        const fd = new FormData(); fd.append('image', b.file)
-        try {
-          const res = await fetch('/api/detect', { method: 'POST', body: fd })
-          const data = await res.json()
-          if (!res.ok || data.error) { b.status = 'error'; b.error = data.error || `HTTP ${res.status}` }
-          else { b.status = 'done'; b.result = data; setHistory(prev => pushHistory({ ...data, name: b.name }, b.name) && (() => { try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]') } catch { return [] } })()) }
-        } catch (e) { b.status = 'error'; b.error = String(e?.message || e).slice(0, 100) }
-      } else {
-        try {
-          const res = await fetch('/api/detect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: b.url }) })
-          const data = await res.json()
-          if (!res.ok || data.error) { b.status = 'error'; b.error = data.error || `HTTP ${res.status}` }
-          else { b.status = 'done'; b.result = data }
-        } catch (e) { b.status = 'error'; b.error = String(e?.message || e).slice(0, 100) }
-      }
-      setBatchFiles([...next])
-      if (i < next.length - 1) await new Promise(r => setTimeout(r, 1200)) // pace under rate limit
+      const data = localMode && imageFile
+        ? await analyzeLocal(imageFile)
+        : await analyzeImage(mode === 'upload' ? imageFile : null, mode === 'url' ? urlInput.trim() : null)
+      setResult(data)
+      pushHistory(data, mode === 'upload' ? imageFile?.name : urlInput.trim().split('/').pop())
+    } catch (e) {
+      setError(e.message || 'Something went wrong. Try again.')
+    } finally {
+      setIsLoading(false)
     }
-    setBatchIndex(-1); setIsLoading(false)
   }
 
-  const addBatchFiles = files => {
-    const items = Array.from(files || []).filter(f => f.type.startsWith('image/')).slice(0, 10 - batchFiles.length)
-    setBatchFiles(b => [...b, ...items.map(f => ({ kind: 'file', file: f, name: f.name, preview: URL.createObjectURL(f), status: 'queued', result: null, error: null }))].slice(0, 10))
+  const addBatchFiles = list => {
+    const files = Array.from(list || []).filter(f => f.type.startsWith('image/')).slice(0, 10 - batchFiles.length)
+    if (!files.length) return
+    setError(null)
+    const items = files.map(f => ({ kind: 'file', file: f, name: f.name, preview: '', status: 'queued', result: null }))
+    Promise.all(items.map(it => new Promise(resolve => {
+      const r = new FileReader()
+      r.onload = () => { it.preview = r.result; resolve() }
+      r.onerror = () => resolve()
+      r.readAsDataURL(it.file)
+    }))).then(() => setBatchFiles(prev => [...prev, ...items].slice(0, 10)))
   }
+
   const addBatchUrl = () => {
     const u = urlInput.trim()
-    if (!/^https?:\/\//i.test(u)) { setError('Enter a valid http(s) URL to add to the batch.'); return }
-    setBatchFiles(b => [...b, { kind: 'url', url: u, name: decodeURIComponent(u.split('/').pop().split('?')[0]) || u, status: 'queued', result: null, error: null }].slice(0, 10))
-    setUrlInput('')
+    if (!u) return
+    if (!/^https?:\/\//i.test(u)) { setError('URLs must start with http:// or https://'); return }
+    setBatchFiles(prev => prev.length >= 10 ? prev : [...prev, { kind: 'url', url: u, name: u.split('/').pop().slice(0, 60) || u, preview: '', status: 'queued', result: null }])
+    setUrlInput(''); setError(null)
   }
 
-  // ── Shareable report ──
-  const handleShare = async () => {
-    if (!result || result.local) return
-    setSharing(true); setError(null)
-    try {
-      let res
-      if (mode === 'url') {
-        res = await fetch('/api/report', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: urlInput.trim() }) })
-      } else {
-        const fd = new FormData(); fd.append('image', imageFile)
-        res = await fetch('/api/report', { method: 'POST', body: fd })
+  const handleBatch = async () => {
+    if (!batchFiles.length) { setError('Add at least one image to the batch.'); return }
+    if (localMode) { setError('Batch mode needs server analysis — turn off local-only mode.'); return }
+    setIsLoading(true); setError(null); setResult(null)
+    for (let i = 0; i < batchFiles.length; i++) {
+      setBatchIndex(i)
+      setBatchFiles(prev => prev.map((b, j) => j === i ? { ...b, status: 'pending' } : b))
+      try {
+        const b = batchFiles[i]
+        const data = await analyzeImage(b.kind === 'file' ? b.file : null, b.kind === 'url' ? b.url : null)
+        setBatchFiles(prev => prev.map((x, j) => j === i ? { ...x, status: 'done', result: data } : x))
+        pushHistory(data, b.name)
+      } catch (e) {
+        setBatchFiles(prev => prev.map((x, j) => j === i ? { ...x, status: 'error', error: e.message } : x))
       }
+    }
+    setBatchIndex(-1)
+    setIsLoading(false)
+  }
+
+  const handleShare = async () => {
+    if (!result) return
+    setSharing(true)
+    try {
+      const res = await fetch('/api/share', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ result })
+      })
       const data = await res.json()
-      if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`)
+      if (!res.ok) throw new Error(data.error || 'Could not create share link.')
       const link = `${window.location.origin}/r/${data.id}`
       setShareUrl(link)
       try { await navigator.clipboard.writeText(link) } catch { /* clipboard blocked — link still shown */ }
-    } catch (e) { setError('Could not create share link: ' + String(e?.message || e).slice(0, 120)) }
-    setSharing(false)
+    } catch (e) {
+      setError(e.message || 'Could not create share link.')
+    } finally {
+      setSharing(false)
+    }
   }
 
-  // ── Feedback loop ──
-  const sendFeedback = async judgement => {
+  const sendFeedback = async verdict => {
     if (!result) return
     try {
-      await fetch('/api/feedback', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ score: result.score, verdict: result.verdict?.level, judgement, degraded: !!result.degraded }) })
-      setFeedbackSent(judgement)
+      await fetch('/api/feedback', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: result.id, score: result.score, level: result.verdict?.level, degraded: !!result.degraded, modelsUsed: result.layers?.models?.results?.length || 0, verdict })
+      })
     } catch { /* non-critical */ }
+    setFeedbackSent(verdict)
   }
 
   const result_ = result
+  const vstyle = result_ ? vmark(result_.verdict?.level) : null
   const verdict = result_ ? { ...(result_.verdict || {}), ...verdictText(result_) } : null
   const layerDefs = result_ ? [
-    { icon: '📋', title: 'Metadata & Provenance', layer: result_.layers?.metadata, color: '#8b5cf6' },
-    { icon: '🌊', title: 'Pixel Forensics', layer: result_.layers?.pixels, color: accentCyan },
-    { icon: '🗂️', title: 'File Structure', layer: result_.layers?.structure, color: '#14b8a6' },
-    { icon: '📐', title: 'Dimensions', layer: result_.layers?.dimensions, color: '#f59e0b' },
+    { icon: 'M', title: 'Metadata & Provenance', layer: result_.layers?.metadata },
+    { icon: 'P', title: 'Pixel Forensics', layer: result_.layers?.pixels },
+    { icon: 'F', title: 'File Structure', layer: result_.layers?.structure },
+    { icon: 'D', title: 'Dimensions', layer: result_.layers?.dimensions },
   ] : []
 
   const howSteps = [
-    { icon: '🧬', label: 'AI Models', color: accent },
-    { icon: '📋', label: 'Metadata', color: '#8b5cf6' },
-    { icon: '🌊', label: 'Forensics', color: accentCyan },
-    { icon: '🔏', label: 'Provenance', color: '#f59e0b' },
-    { icon: '📐', label: 'Dimensions', color: '#14b8a6' },
+    { icon: '01', label: 'AI Models' },
+    { icon: '02', label: 'Metadata' },
+    { icon: '03', label: 'Forensics' },
+    { icon: '04', label: 'Provenance' },
+    { icon: '05', label: 'Dimensions' },
   ]
 
   const howContent = [
     {
-      title: 'Diverse ML model ensemble', icon: '🧬', color: accent,
+      title: 'Diverse ML model ensemble', icon: '01',
       body: 'Multiple specialized classifiers analyze pixel-level statistical patterns invisible to the eye. Requests run in parallel with timeouts via Promise.allSettled — if one model is cold or down, its weight is redistributed and the result is marked "degraded" with a wider uncertainty band instead of failing outright. When models strongly disagree, that disagreement itself widens the reported uncertainty band.',
       tags: ['Parallel inference', 'Graceful degradation', 'Disagreement detection', 'Weight redistribution']
     },
     {
-      title: 'Server-side EXIF forensics', icon: '📋', color: '#8b5cf6',
+      title: 'Server-side EXIF forensics', icon: '02',
       body: 'Every real camera photo embeds rich provenance: make, model, GPS, timestamp, aperture, lens. We parse metadata on the server with exifr and check 12+ fields against known AI-tool signatures (Stable Diffusion, Midjourney, DALL-E, ComfyUI…). Missing metadata raises suspicion but never acts as sole proof — messaging apps strip EXIF too.',
       tags: ['12+ fields checked', 'AI software signatures', 'Adaptive weighting', 'Tamper awareness']
     },
     {
-      title: 'Pixel & JPEG structure forensics', icon: '🌊', color: accentCyan,
+      title: 'Pixel & JPEG structure forensics', icon: '03',
       body: 'A corrected 2-D FFT measures the radial frequency spectrum: GAN upsampling leaves periodic fingerprints, diffusion output has characteristic mid-frequency deficits, while real photos follow a natural 1/f power law. We also measure block texture variance and inspect the JPEG container for recompression traces and quantization-table anomalies.',
       tags: ['2-D FFT spectrum', '1/f power law', 'Texture variance', 'JPEG quantization tables']
     },
     {
-      title: 'Cryptographic provenance: C2PA & SynthID', icon: '🔏', color: '#f59e0b',
+      title: 'Cryptographic provenance: C2PA & SynthID', icon: '04',
       body: 'We scan containers for C2PA content credentials (signed chains from Adobe, Truepic cameras…), Google DeepMind SynthID watermarks (Gemini/Imagen), GLIGEN tree-rings, XMP Generator fields written by GPT-image, and IPTC AI-tags used by stock platforms. A verified C2PA "captured by camera" manifest is near-proof of authenticity; an AI-signed one is near-proof of generation.',
       tags: ['C2PA manifests', 'SynthID markers', 'GLIGEN detection', 'XMP / IPTC scans']
     },
     {
-      title: 'Dimension heuristics', icon: '📐', color: '#14b8a6',
+      title: 'Dimension heuristics', icon: '05',
       body: 'AI generators emit standard sizes: 512×512 (SD 1.x), 1024×1024 (SDXL/DALL-E), 1024×1792 (DALL-E 3), 1344×768 (Midjourney), 1008×1776 (Flux). Real cameras produce sensor-native irregular dimensions. We match exact sizes, multiples of 64/128, and aspect ratios — high-megapixel images earn a real-photo bonus.',
       tags: ['Exact size matching', 'Divisibility checks', 'Aspect ratios', 'Megapixel bonus']
     }
   ]
 
   return (
-    <div style={{ minHeight: '100vh', background: bg, color: textPrimary, fontFamily: '"Inter", -apple-system, BlinkMacSystemFont, sans-serif', overflowX: 'hidden' }}>
+    <div style={{ minHeight: '100vh', background: bg, color: textPrimary, fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif', overflowX: 'hidden' }}>
       {/* Skip link for keyboard users */}
-      <a href="#main" style={{ position: 'absolute', left: '-9999px', top: 0, background: accent, color: '#fff', padding: '8px 16px', zIndex: 200, borderRadius: '0 0 8px 0' }} onFocus={e => e.currentTarget.style.left = '0'} onBlur={e => e.currentTarget.style.left = '-9999px'}>Skip to content</a>
+      <a href="#main" style={{ position: 'absolute', left: '-9999px', top: 0, background: ink, color: '#fff', padding: '8px 16px', zIndex: 200, borderRadius: '0 0 4px 0' }} onFocus={e => e.currentTarget.style.left = '0'} onBlur={e => e.currentTarget.style.left = '-9999px'}>Skip to content</a>
 
       {/* Navbar */}
-      <nav aria-label="Main navigation" style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 100, background: 'rgba(10,10,10,0.85)', backdropFilter: 'blur(24px)', borderBottom: `1px solid ${border}`, padding: '0 clamp(1rem,4vw,2rem)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: '58px' }}>
+      <nav aria-label="Main navigation" style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 100, background: 'rgba(255,255,255,0.94)', backdropFilter: 'blur(8px)', borderBottom: `1px solid ${border}`, padding: '0 clamp(1rem,4vw,2rem)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: '58px' }}>
         <button onClick={() => navigate('home')} aria-label="IsItAI home" style={{ display: 'flex', alignItems: 'center', gap: '9px', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
-          <Logo size={28} />
-          <span style={{ fontWeight: 800, fontSize: '1.1rem', background: `linear-gradient(135deg,${accent},${accentCyan})`, WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>IsItAI</span>
+          <Logo size={26} />
+          <span style={{ fontWeight: 700, fontSize: '1.05rem', color: ink, letterSpacing: '-0.01em' }}>IsItAI</span>
         </button>
         <div className="desk-nav" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
           {[['home', 'Home'], ['how', 'How it works'], ['detect', 'Try free']].map(([id, label]) => (
-            <button key={id} onClick={() => navigate(id)} aria-current={page === id ? 'page' : undefined} style={{ background: page === id ? `${accent}18` : 'none', border: `1px solid ${page === id ? accent + '35' : 'transparent'}`, borderRadius: '7px', padding: '6px 14px', color: page === id ? accent : textSoft, cursor: 'pointer', fontSize: '0.86rem', fontWeight: page === id ? 600 : 400, transition: 'all 0.18s', fontFamily: 'inherit' }}>
+            <button key={id} onClick={() => navigate(id)} aria-current={page === id ? 'page' : undefined} style={{ background: page === id ? surface : 'none', border: `1px solid ${page === id ? border : 'transparent'}`, borderRadius: '5px', padding: '6px 13px', color: page === id ? ink : textSoft, cursor: 'pointer', fontSize: '0.86rem', fontWeight: page === id ? 600 : 400, transition: 'color 0.15s', fontFamily: 'inherit' }}>
               {label}
             </button>
           ))}
-          <Link href="/api-guide" style={{ marginLeft: '4px', padding: '6px 12px', color: textSoft, textDecoration: 'none', fontSize: '0.82rem', border: `1px solid ${border}`, borderRadius: '7px' }}>API</Link>
-          <a href="https://github.com/Ali2191/isitai" target="_blank" rel="noreferrer" style={{ marginLeft: '4px', display: 'flex', alignItems: 'center', gap: '6px', background: 'rgba(255,255,255,0.06)', border: `1px solid ${border}`, borderRadius: '7px', padding: '6px 12px', color: textSoft, textDecoration: 'none', fontSize: '0.82rem' }}>
-            ⭐ Star
+          <Link href="/api-guide" style={{ marginLeft: '4px', padding: '6px 12px', color: textSoft, textDecoration: 'none', fontSize: '0.84rem', border: `1px solid ${border}`, borderRadius: '5px' }}>API</Link>
+          <a href="https://github.com/Ali2191/isitai" target="_blank" rel="noreferrer" style={{ marginLeft: '4px', padding: '6px 12px', color: textSoft, textDecoration: 'none', fontSize: '0.84rem', border: `1px solid ${border}`, borderRadius: '5px' }}>
+            GitHub
           </a>
         </div>
-        <button className="mob-menu" aria-label="Toggle menu" aria-expanded={menuOpen} onClick={() => setMenuOpen(!menuOpen)} style={{ display: 'none', background: 'none', border: `1px solid ${border}`, borderRadius: '7px', padding: '8px 11px', color: textPrimary, fontSize: '1.1rem', cursor: 'pointer' }}>☰</button>
+        <button className="mob-menu" aria-label="Toggle menu" aria-expanded={menuOpen} onClick={() => setMenuOpen(!menuOpen)} style={{ display: 'none', background: 'none', border: `1px solid ${border}`, borderRadius: '5px', padding: '8px 11px', color: ink, fontSize: '1.1rem', cursor: 'pointer', lineHeight: 1 }}>≡</button>
       </nav>
 
       {/* Mobile menu */}
       {menuOpen && (
-        <div style={{ position: 'fixed', top: '58px', left: 0, right: 0, zIndex: 99, background: bg2, borderBottom: `1px solid ${border}`, padding: '0.5rem 1.5rem 1rem' }}>
+        <div style={{ position: 'fixed', top: '58px', left: 0, right: 0, zIndex: 99, background: '#ffffff', borderBottom: `1px solid ${border}`, padding: '0.5rem 1.5rem 1rem' }}>
           {[['home', 'Home'], ['how', 'How it works'], ['detect', 'Try free']].map(([id, label]) => (
-            <button key={id} onClick={() => navigate(id)} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', padding: '0.8rem 0', color: page === id ? accent : textPrimary, cursor: 'pointer', fontSize: '1rem', fontWeight: page === id ? 600 : 400, borderBottom: `1px solid ${border}`, fontFamily: 'inherit' }}>{label}</button>
+            <button key={id} onClick={() => navigate(id)} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', padding: '0.8rem 0', color: page === id ? ink : textSoft, cursor: 'pointer', fontSize: '1rem', fontWeight: page === id ? 600 : 400, borderBottom: `1px solid ${border}`, fontFamily: 'inherit' }}>{label}</button>
           ))}
-          <Link href="/api-guide" onClick={() => setMenuOpen(false)} style={{ display: 'block', padding: '0.8rem 0', color: textPrimary, textDecoration: 'none', fontSize: '1rem', borderBottom: `1px solid ${border}` }}>API guide</Link>
+          <Link href="/api-guide" onClick={() => setMenuOpen(false)} style={{ display: 'block', padding: '0.8rem 0', color: ink, textDecoration: 'none', fontSize: '1rem', borderBottom: `1px solid ${border}` }}>API guide</Link>
         </div>
       )}
 
-      <main id="main" style={{ paddingTop: '58px', animation: animating ? 'pOut 0.28s ease forwards' : 'pIn 0.38s ease forwards' }}>
-
-        {/* ══ HOME ══ */}
+      <main id="main" style={{ paddingTop: '58px' }}>
+        {/* Home */}
         {page === 'home' && (
           <div>
-            <section style={{ minHeight: 'calc(100vh - 58px)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 'clamp(2rem,6vw,5rem) clamp(1rem,4vw,2rem)', textAlign: 'center', position: 'relative', overflow: 'hidden' }}>
-              <div style={{ position: 'absolute', inset: 0, opacity: 0.035, backgroundImage: 'url("data:image/svg+xml,%3Csvg viewBox=\'0 0 256 256\' xmlns=\'http://www.w3.org/2000/svg\'%3E%3Cfilter id=\'noise\'%3E%3CfeTurbulence type=\'fractalNoise\' baseFrequency=\'0.9\' numOctaves=\'4\' stitchTiles=\'stitch\'/%3E%3C/filter%3E%3Crect width=\'100%25\' height=\'100%25\' filter=\'url(%23noise)\'/%3E%3C/svg%3E")', backgroundRepeat: 'repeat', pointerEvents: 'none' }} />
-              <div style={{ position: 'absolute', top: '15%', left: '8%', width: 'min(50vw,600px)', height: 'min(50vw,600px)', background: `radial-gradient(circle,${accent}0f 0%,transparent 60%)`, borderRadius: '50%', pointerEvents: 'none' }} />
-              <div style={{ position: 'absolute', bottom: '10%', right: '5%', width: 'min(40vw,450px)', height: 'min(40vw,450px)', background: `radial-gradient(circle,${accentCyan}0a 0%,transparent 60%)`, borderRadius: '50%', pointerEvents: 'none' }} />
+            <section style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', padding: 'clamp(4rem,10vw,7rem) clamp(1.25rem,5vw,3rem) clamp(3rem,6vw,4rem)', maxWidth: '980px', margin: '0 auto' }}>
+              <p style={{ fontSize: '0.8rem', fontWeight: 600, color: inkFaint, textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: '1.25rem' }}>IsItAI — AI image detector</p>
 
-              <div style={{ marginBottom: '1.5rem', animation: 'fadeUp 0.7s ease' }}><Logo size={50} /></div>
-
-              <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', background: `${accent}12`, border: `1px solid ${accent}28`, borderRadius: '24px', padding: '5px 16px', fontSize: '0.77rem', color: accent, marginBottom: '1.5rem', fontWeight: 500, animation: 'fadeUp 0.7s ease 0.1s both', letterSpacing: '0.02em' }}>
-                <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#22c55e', display: 'inline-block', animation: 'pulse 2s infinite' }} />
-                Free · No account · Multi-layer forensics · Uncertainty you can trust
-              </div>
-
-              <h1 style={{ fontSize: 'clamp(2.4rem,7vw,5.5rem)', fontWeight: 900, margin: '0 0 1.2rem', lineHeight: 1.04, letterSpacing: '-0.04em', maxWidth: '860px', animation: 'fadeUp 0.7s ease 0.15s both' }}>
-                Is this image real<br />or{' '}
-                <span style={{ background: `linear-gradient(135deg,${accent},${accentCyan})`, WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>AI-generated?</span>
+              <h1 style={{ fontSize: 'clamp(2.2rem,6vw,4.2rem)', fontWeight: 700, margin: '0 0 1.4rem', lineHeight: 1.1, letterSpacing: '-0.03em', maxWidth: '720px', color: ink }}>
+                Is this image real,<br />or generated?
               </h1>
 
-              <p style={{ color: textSoft, fontSize: 'clamp(0.95rem,2vw,1.15rem)', maxWidth: '520px', margin: '0 auto 2.5rem', lineHeight: 1.8, animation: 'fadeUp 0.7s ease 0.2s both' }}>
-                Upload a file, paste a URL, or batch-analyze up to 10 images. Get a plain-English verdict with honest uncertainty bands — and see exactly which evidence drove it.
+              <p style={{ color: inkSoft, fontSize: 'clamp(1rem,2vw,1.15rem)', maxWidth: '560px', margin: '0 0 2.25rem', lineHeight: 1.75 }}>
+                Upload a file or paste a URL. IsItAI runs four detection layers — machine-learning classifiers, EXIF metadata, pixel forensics, and provenance standards like C2PA — then explains its answer in plain language, including when it isn&apos;t sure.
               </p>
 
-              <div style={{ display: 'flex', gap: '0.8rem', flexWrap: 'wrap', justifyContent: 'center', marginBottom: '4.5rem', animation: 'fadeUp 0.7s ease 0.25s both' }}>
+              <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', marginBottom: '3.5rem' }}>
                 <button onClick={() => navigate('detect')}
-                  style={{ background: `linear-gradient(135deg,${accent},${accentCyan})`, border: 'none', color: '#fff', padding: '0.85rem 2rem', borderRadius: '10px', fontSize: '0.95rem', fontWeight: 700, cursor: 'pointer', transition: 'all 0.2s', boxShadow: `0 0 32px ${accent}40`, minHeight: '46px', fontFamily: 'inherit' }}>
-                  Detect an image — it's free →
+                  style={{ background: ink, border: `1px solid ${ink}`, color: '#fff', padding: '0.8rem 1.6rem', borderRadius: '6px', fontSize: '0.95rem', fontWeight: 600, cursor: 'pointer', minHeight: '46px', fontFamily: 'inherit' }}>
+                  Analyze an image
                 </button>
                 <button onClick={() => navigate('how')}
-                  style={{ background: 'rgba(255,255,255,0.05)', border: `1px solid ${border}`, color: textPrimary, padding: '0.85rem 1.8rem', borderRadius: '10px', fontSize: '0.95rem', fontWeight: 500, cursor: 'pointer', transition: 'all 0.2s', minHeight: '46px', fontFamily: 'inherit' }}>
+                  style={{ background: '#fff', border: '1px solid #c9c9c9', color: ink, padding: '0.8rem 1.6rem', borderRadius: '6px', fontSize: '0.95rem', fontWeight: 500, cursor: 'pointer', minHeight: '46px', fontFamily: 'inherit' }}>
                   How it works
                 </button>
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(120px,1fr))', gap: '0.8rem', maxWidth: '640px', width: '100%', animation: 'fadeUp 0.7s ease 0.3s both' }}>
-                {[['ML ensemble', 'graceful failover'], ['5 layers', 'EXIF · FFT · C2PA'], ['Uncertainty', 'honest bands'], ['Local mode', 'nothing uploaded']].map(([v, l]) => (
-                  <div key={v} style={{ padding: '1rem 0.8rem', background: 'rgba(255,255,255,0.03)', border: `1px solid ${border}`, borderRadius: '12px', textAlign: 'center' }}>
-                    <div style={{ fontWeight: 800, fontSize: '1.02rem', background: `linear-gradient(135deg,${accent},${accentCyan})`, WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>{v}</div>
-                    <div style={{ color: textMuted, fontSize: '0.72rem', marginTop: '3px' }}>{l}</div>
-                  </div>
+              <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(190px,1fr))', gap: '0 2rem', width: '100%', borderTop: `1px solid ${border}`, paddingTop: '1.5rem' }}>
+                {[['ML ensemble', 'with graceful model failover'], ['Five signal layers', 'EXIF · FFT · C2PA · SynthID'], ['Uncertainty bands', 'we say so when we are unsure'], ['Local-only mode', 'nothing leaves your device']].map(([v, l]) => (
+                  <li key={v} style={{ padding: '0.5rem 0' }}>
+                    <span style={{ fontWeight: 600, fontSize: '0.92rem', color: ink }}>{v}</span>
+                    <span style={{ display: 'block', color: inkFaint, fontSize: '0.82rem', marginTop: '2px' }}>{l}</span>
+                  </li>
                 ))}
-              </div>
+              </ul>
             </section>
 
-            <section ref={featuresRef} style={{ padding: 'clamp(3rem,6vw,5rem) clamp(1rem,4vw,2rem)', maxWidth: '960px', margin: '0 auto' }}>
-              <div style={{ textAlign: 'center', marginBottom: '3rem', opacity: featuresInView ? 1 : 0, transform: featuresInView ? 'translateY(0)' : 'translateY(20px)', transition: 'all 0.6s ease' }}>
-                <h2 style={{ fontSize: 'clamp(1.6rem,4vw,2.4rem)', fontWeight: 800, margin: '0 0 0.75rem', letterSpacing: '-0.03em' }}>Why IsItAI is different</h2>
-                <p style={{ color: textSoft, maxWidth: '460px', margin: '0 auto', lineHeight: 1.7, fontSize: '0.95rem' }}>Most tools show you a number. We give you a verdict you can read — show our work — and tell you when we're unsure.</p>
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(240px,1fr))', gap: '1rem' }}>
+            <section ref={featuresRef} style={{ padding: 'clamp(2.5rem,6vw,4rem) clamp(1.25rem,5vw,3rem)', maxWidth: '980px', margin: '0 auto', borderTop: `1px solid ${border}` }}>
+              <h2 style={{ fontSize: '1.35rem', fontWeight: 700, margin: '0 0 0.5rem', letterSpacing: '-0.02em', opacity: featuresInView ? 1 : 0, transform: featuresInView ? 'none' : 'translateY(12px)', transition: 'opacity 0.5s ease, transform 0.5s ease' }}>What makes this different</h2>
+              <p style={{ color: inkSoft, maxWidth: '560px', lineHeight: 1.7, fontSize: '0.95rem', margin: '0 0 2rem', opacity: featuresInView ? 1 : 0, transition: 'opacity 0.5s ease 0.1s' }}>Most detectors show a number and nothing else. We show the evidence behind the verdict and flag when the evidence is weak.</p>
+              <dl style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(260px,1fr))', gap: '1.75rem 2rem', margin: 0 }}>
                 {[
-                  { icon: '💬', title: 'Evidence, explained', desc: 'Every flagged signal carries a plain-language reason. Tap any badge in the breakdown to learn why it matters.', color: accent },
-                  { icon: '🎯', title: 'Honest uncertainty', desc: 'Results include an explicit probability band. When evidence conflicts, we say "uncertain" instead of guessing.', color: '#8b5cf6' },
-                  { icon: '🛡️', title: 'Survives outages', desc: 'If a model is cold or down, weights redistribute and you get a clearly-marked degraded result — never a crash.', color: accentCyan },
-                  { icon: '🔒', title: 'Private by design', desc: 'Images are analyzed transiently and never stored. Local mode keeps sensitive photos entirely on your device.', color: '#f59e0b' },
-                  { icon: '📎', title: 'URL & batch mode', desc: 'Paste a link or drop up to 10 files. Perfect for fact-checkers moderating a thread of suspicious images.', color: '#14b8a6' },
-                  { icon: '🔗', title: 'Shareable reports', desc: 'Generate a privacy-safe report link (results only, expires in 7 days) to share findings without the image.', color: '#ec4899' },
-                ].map((f, fi) => (
-                  <div key={f.title} style={{ padding: '1.5rem', background: 'rgba(255,255,255,0.03)', border: `1px solid ${border}`, borderRadius: '14px', transition: 'all 0.22s', opacity: featuresInView ? 1 : 0, transform: featuresInView ? 'translateY(0)' : 'translateY(16px)', transitionDelay: `${fi * 0.08}s` }}>
-                    <div style={{ fontSize: '1.6rem', marginBottom: '0.8rem' }}>{f.icon}</div>
-                    <h3 style={{ margin: '0 0 0.5rem', fontWeight: 700, fontSize: '0.93rem', color: textPrimary }}>{f.title}</h3>
-                    <p style={{ margin: 0, color: textMuted, fontSize: '0.84rem', lineHeight: 1.7 }}>{f.desc}</p>
+                  ['Evidence, explained', 'Every flagged signal carries a plain-language reason. Open the forensic breakdown and click any badge to learn why it matters.'],
+                  ['Honest uncertainty', 'Results include an explicit probability band. When the layers disagree, the verdict says "uncertain" instead of guessing.'],
+                  ['Survives outages', 'If a model is cold or down, weights redistribute and you get a clearly marked degraded result rather than a crash.'],
+                  ['Private by design', 'Images are analyzed transiently and never stored. Local-only mode keeps sensitive photos entirely on your device.'],
+                  ['URL and batch mode', 'Paste a link or drop up to ten files. Built for fact-checkers working through a thread of suspicious images.'],
+                  ['Shareable reports', 'Generate a privacy-safe report link — results only, no image, expires after seven days.'],
+                ].map(([title, desc], fi) => (
+                  <div key={title} style={{ opacity: featuresInView ? 1 : 0, transform: featuresInView ? 'none' : 'translateY(10px)', transition: `opacity 0.45s ease ${fi * 0.06}s, transform 0.45s ease ${fi * 0.06}s` }}>
+                    <dt style={{ fontWeight: 600, fontSize: '0.95rem', color: ink, marginBottom: '0.4rem', paddingBottom: '0.4rem', borderBottom: '2px solid #161616', display: 'inline-block' }}>{title}</dt>
+                    <dd style={{ margin: 0, color: inkSoft, fontSize: '0.88rem', lineHeight: 1.7 }}>{desc}</dd>
                   </div>
                 ))}
-              </div>
-              <div style={{ textAlign: 'center', marginTop: '2.5rem' }}>
-                <button onClick={() => navigate('detect')} style={{ background: `linear-gradient(135deg,${accent},${accentCyan})`, border: 'none', color: '#fff', padding: '0.85rem 2rem', borderRadius: '10px', fontSize: '0.95rem', fontWeight: 700, cursor: 'pointer', boxShadow: `0 0 24px ${accent}30`, minHeight: '46px', fontFamily: 'inherit' }}>
-                  Try it free →
+              </dl>
+              <p style={{ marginTop: '2.5rem' }}>
+                <button onClick={() => navigate('detect')} style={{ background: 'none', border: 'none', color: ink, fontWeight: 600, fontSize: '0.95rem', cursor: 'pointer', padding: 0, textDecoration: 'underline', textUnderlineOffset: '3px', fontFamily: 'inherit' }}>
+                  Try it on an image →
                 </button>
-              </div>
+              </p>
             </section>
           </div>
         )}
 
-        {/* ══ HOW IT WORKS ══ */}
+        {/* How it works */}
         {page === 'how' && (
-          <div style={{ maxWidth: '900px', margin: '0 auto', padding: 'clamp(2rem,5vw,4rem) clamp(1rem,4vw,1.5rem)' }}>
-            <div style={{ textAlign: 'center', marginBottom: '3rem' }}>
-              <div style={{ display: 'inline-block', background: `${accent}12`, border: `1px solid ${accent}28`, borderRadius: '20px', padding: '4px 14px', fontSize: '0.76rem', color: accent, marginBottom: '1rem', fontWeight: 500 }}>Under the hood</div>
-              <h1 style={{ fontSize: 'clamp(1.8rem,5vw,3rem)', fontWeight: 900, margin: '0 0 0.8rem', letterSpacing: '-0.03em' }}>How the detection works</h1>
-              <p style={{ color: textSoft, maxWidth: '480px', margin: '0 auto', lineHeight: 1.7, fontSize: '0.93rem' }}>Five independent forensic layers fuse into one score with an honest uncertainty band.</p>
-            </div>
+          <div style={{ maxWidth: '860px', margin: '0 auto', padding: 'clamp(2.5rem,5vw,4rem) clamp(1.25rem,5vw,2rem)' }}>
+            <p style={{ fontSize: '0.8rem', fontWeight: 600, color: inkFaint, textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: '1rem' }}>Under the hood</p>
+            <h1 style={{ fontSize: 'clamp(1.7rem,4vw,2.4rem)', fontWeight: 700, margin: '0 0 0.8rem', letterSpacing: '-0.02em' }}>How the detection works</h1>
+            <p style={{ color: inkSoft, maxWidth: '560px', lineHeight: 1.75, fontSize: '0.95rem', margin: '0 0 2.5rem' }}>Five independent layers each produce signals. They are fused into one score with an uncertainty band that widens when the layers disagree.</p>
 
-            <div role="tablist" aria-label="Detection layers" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(100px,1fr))', gap: '8px', marginBottom: '1.5rem' }}>
+            <div role="tablist" aria-label="Detection layers" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(120px,1fr))', borderBottom: `1px solid ${border}`, marginBottom: '2rem' }}>
               {howSteps.map((s, i) => (
                 <button key={i} role="tab" aria-selected={activeHow === i} onClick={() => setActiveHow(i)}
-                  style={{ padding: '0.8rem 0.5rem', borderRadius: '10px', border: `1.5px solid ${activeHow === i ? s.color : border}`, background: activeHow === i ? `${s.color}12` : 'rgba(255,255,255,0.03)', cursor: 'pointer', transition: 'all 0.2s', textAlign: 'center', minHeight: '46px', fontFamily: 'inherit' }}>
-                  <div style={{ fontSize: '1.2rem', marginBottom: '4px' }}>{s.icon}</div>
-                  <div style={{ fontSize: '0.68rem', fontWeight: 700, color: activeHow === i ? s.color : textSoft, lineHeight: 1.2 }}>{s.label}</div>
-                  <div style={{ fontSize: '0.6rem', color: activeHow === i ? s.color : textMuted, marginTop: '2px' }}>Layer {i + 1}</div>
+                  style={{ padding: '0.9rem 0.5rem', background: 'none', cursor: 'pointer', textAlign: 'left', minHeight: '52px', fontFamily: 'inherit', border: 'none', borderBottom: `2px solid ${activeHow === i ? ink : 'transparent'}`, marginBottom: '-1px', transition: 'border-color 0.15s' }}>
+                  <span style={{ fontSize: '0.7rem', color: activeHow === i ? ink : inkFaint, fontVariantNumeric: 'tabular-nums', marginRight: '6px' }}>{s.icon}</span>
+                  <span style={{ fontSize: '0.84rem', fontWeight: activeHow === i ? 600 : 400, color: activeHow === i ? ink : inkSoft }}>{s.label}</span>
                 </button>
               ))}
             </div>
 
             {howContent.map((h, i) => i === activeHow && (
-              <div key={i} role="tabpanel" style={{ background: 'rgba(255,255,255,0.03)', border: `1px solid ${border}`, borderRadius: '18px', overflow: 'hidden', animation: 'panelIn 0.3s ease' }}>
-                <div style={{ padding: '1.5rem 2rem', background: `${h.color}08`, borderBottom: `1px solid ${border}`, display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
-                  <div style={{ fontSize: '2.5rem' }}>{h.icon}</div>
-                  <div>
-                    <div style={{ fontSize: '0.66rem', color: h.color, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '4px' }}>Layer {i + 1}</div>
-                    <h2 style={{ margin: 0, fontSize: 'clamp(1rem,3vw,1.4rem)', fontWeight: 800, letterSpacing: '-0.02em' }}>{h.title}</h2>
-                  </div>
-                </div>
-                <div className="how-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 220px' }}>
-                  <div style={{ padding: '1.5rem 2rem', borderRight: `1px solid ${border}` }}>
-                    <p style={{ color: textSoft, lineHeight: 1.85, fontSize: '0.92rem', margin: 0 }}>{h.body}</p>
-                  </div>
-                  <div style={{ padding: '1.5rem' }}>
-                    <div style={{ fontSize: '0.66rem', color: textMuted, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '0.8rem' }}>Key concepts</div>
-                    {h.tags.map(tag => (
-                      <div key={tag} style={{ padding: '6px 10px', background: `${h.color}0d`, border: `1px solid ${h.color}20`, borderRadius: '8px', fontSize: '0.76rem', color: h.color, fontWeight: 500, display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '6px' }}>
-                        <span style={{ width: '4px', height: '4px', borderRadius: '50%', background: h.color, flexShrink: 0 }} />{tag}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-                <div style={{ padding: '1rem 2rem', borderTop: `1px solid ${border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
-                  <button onClick={() => setActiveHow(Math.max(0, i - 1))} disabled={i === 0} style={{ background: 'none', border: `1px solid ${i === 0 ? 'transparent' : border}`, borderRadius: '7px', padding: '7px 16px', color: i === 0 ? textMuted : textPrimary, cursor: 'pointer', fontSize: '0.83rem', minHeight: '44px', fontFamily: 'inherit' }}>← Previous</button>
-                  <span style={{ fontSize: '0.76rem', color: textMuted }}>{i + 1} / {howSteps.length}</span>
+              <div key={i} role="tabpanel" style={{ animation: 'panelIn 0.25s ease' }}>
+                <h2 style={{ margin: '0 0 1rem', fontSize: '1.3rem', fontWeight: 700, letterSpacing: '-0.01em' }}><span style={{ color: inkFaint, fontWeight: 500, marginRight: '10px', fontVariantNumeric: 'tabular-nums' }}>{h.icon}</span>{h.title}</h2>
+                <p style={{ color: inkSoft, lineHeight: 1.85, fontSize: '0.95rem', margin: '0 0 1.5rem', maxWidth: '640px' }}>{h.body}</p>
+                <ul style={{ listStyle: 'none', padding: 0, margin: '0 0 2rem', display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                  {h.tags.map(tag => (
+                    <li key={tag} style={{ padding: '5px 12px', background: surface, border: `1px solid ${border}`, borderRadius: '4px', fontSize: '0.78rem', color: inkSoft }}>{tag}</li>
+                  ))}
+                </ul>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: `1px solid ${border}`, paddingTop: '1rem', gap: '8px' }}>
+                  <button onClick={() => setActiveHow(Math.max(0, i - 1))} disabled={i === 0} style={{ background: 'none', border: `1px solid ${i === 0 ? 'transparent' : '#c9c9c9'}`, borderRadius: '5px', padding: '8px 14px', color: i === 0 ? '#c4c4c4' : ink, cursor: i === 0 ? 'default' : 'pointer', fontSize: '0.84rem', minHeight: '44px', fontFamily: 'inherit' }}>Previous</button>
+                  <span style={{ fontSize: '0.78rem', color: inkFaint, fontVariantNumeric: 'tabular-nums' }}>{i + 1} of {howSteps.length}</span>
                   {i < howSteps.length - 1
-                    ? <button onClick={() => setActiveHow(i + 1)} style={{ background: `linear-gradient(135deg,${accent},${accentCyan})`, border: 'none', borderRadius: '7px', padding: '7px 16px', color: '#fff', cursor: 'pointer', fontSize: '0.83rem', fontWeight: 600, minHeight: '44px', fontFamily: 'inherit' }}>Next →</button>
-                    : <button onClick={() => navigate('detect')} style={{ background: `linear-gradient(135deg,${accent},${accentCyan})`, border: 'none', borderRadius: '7px', padding: '7px 16px', color: '#fff', cursor: 'pointer', fontSize: '0.83rem', fontWeight: 600, minHeight: '44px', fontFamily: 'inherit' }}>Try it free →</button>
+                    ? <button onClick={() => setActiveHow(i + 1)} style={{ background: ink, border: `1px solid ${ink}`, borderRadius: '5px', padding: '8px 14px', color: '#fff', cursor: 'pointer', fontSize: '0.84rem', fontWeight: 600, minHeight: '44px', fontFamily: 'inherit' }}>Next</button>
+                    : <button onClick={() => navigate('detect')} style={{ background: ink, border: `1px solid ${ink}`, borderRadius: '5px', padding: '8px 14px', color: '#fff', cursor: 'pointer', fontSize: '0.84rem', fontWeight: 600, minHeight: '44px', fontFamily: 'inherit' }}>Try it on an image</button>
                   }
                 </div>
               </div>
@@ -490,32 +424,30 @@ export default function App() {
           </div>
         )}
 
-        {/* ══ DETECT ══ */}
+        {/* Detect */}
         {page === 'detect' && (
           <div style={{ maxWidth: '620px', margin: '0 auto', padding: 'clamp(2rem,5vw,3.5rem) clamp(1rem,4vw,1.5rem)' }}>
-            <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
-              <h1 style={{ fontSize: 'clamp(1.6rem,5vw,2.4rem)', fontWeight: 900, margin: '0 0 0.6rem', letterSpacing: '-0.03em' }}>Analyze your image</h1>
-              <p style={{ color: textSoft, margin: 0, fontSize: '0.9rem', lineHeight: 1.7 }}>Plain-English verdict with uncertainty bands. Free forever.</p>
-            </div>
+            <h1 style={{ fontSize: 'clamp(1.5rem,4vw,2rem)', fontWeight: 700, margin: '0 0 0.5rem', letterSpacing: '-0.02em' }}>Analyze an image</h1>
+            <p style={{ color: inkSoft, margin: '0 0 1.75rem', fontSize: '0.92rem', lineHeight: 1.7 }}>Free, no account. Verdicts come with uncertainty bands and the evidence behind them.</p>
 
             {/* Mode tabs */}
-            <div role="tablist" aria-label="Input mode" style={{ display: 'flex', gap: '6px', marginBottom: '0.9rem' }}>
-              {[['upload', '🖼️ Upload'], ['url', '🔗 URL'], ['batch', '🗂️ Batch']].map(([id, label]) => (
+            <div role="tablist" aria-label="Input mode" style={{ display: 'flex', marginBottom: '1rem', borderBottom: `1px solid ${border}` }}>
+              {[['upload', 'Upload'], ['url', 'URL'], ['batch', 'Batch']].map(([id, label]) => (
                 <button key={id} role="tab" aria-selected={mode === id} onClick={() => { setMode(id); setError(null) }}
-                  style={{ flex: 1, padding: '9px 6px', borderRadius: '10px', border: `1px solid ${mode === id ? accent + '55' : border}`, background: mode === id ? `${accent}14` : 'rgba(255,255,255,0.02)', color: mode === id ? accent : textSoft, fontWeight: mode === id ? 700 : 500, fontSize: '0.83rem', cursor: 'pointer', fontFamily: 'inherit', minHeight: '42px' }}>{label}</button>
+                  style={{ padding: '9px 18px', background: 'none', border: 'none', borderBottom: `2px solid ${mode === id ? ink : 'transparent'}`, marginBottom: '-1px', color: mode === id ? ink : inkSoft, fontWeight: mode === id ? 600 : 400, fontSize: '0.86rem', cursor: 'pointer', fontFamily: 'inherit', minHeight: '42px', transition: 'border-color 0.15s' }}>{label}</button>
               ))}
             </div>
 
             {/* Local mode toggle */}
-            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '0.9rem', padding: '8px 12px', background: localMode ? 'rgba(34,197,94,0.08)' : 'rgba(255,255,255,0.02)', border: `1px solid ${localMode ? 'rgba(34,197,94,0.3)' : border}`, borderRadius: '10px', cursor: 'pointer', fontSize: '0.8rem', color: localMode ? '#4ade80' : textSoft }}>
-              <input type="checkbox" checked={localMode} onChange={e => setLocalMode(e.target.checked)} style={{ accentColor: '#22c55e', width: 16, height: 16 }} />
-              <span>🔒 <strong>Local-only mode</strong> — nothing leaves your device (heuristics only, lower accuracy)</span>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '1rem', padding: '9px 12px', background: localMode ? '#f0f0f0' : surface, border: `1px solid ${localMode ? '#161616' : border}`, borderRadius: '6px', cursor: 'pointer', fontSize: '0.82rem', color: localMode ? ink : inkSoft }}>
+              <input type="checkbox" checked={localMode} onChange={e => setLocalMode(e.target.checked)} style={{ accentColor: '#161616', width: 15, height: 15 }} />
+              <span><strong>Run locally only</strong> — nothing leaves your device (heuristics only, lower accuracy)</span>
             </label>
 
             {/* Upload zone */}
             {mode === 'upload' && (
               <div
-                style={{ background: isDragging ? `${accent}08` : 'rgba(255,255,255,0.02)', border: `2px dashed ${isDragging ? accent : border}`, borderRadius: '16px', overflow: 'hidden', marginBottom: '0.75rem', transition: 'all 0.22s', position: 'relative' }}
+                style={{ background: isDragging ? '#f0f0f0' : surface, border: `1.5px dashed ${isDragging ? ink : '#c9c9c9'}`, borderRadius: '8px', overflow: 'hidden', marginBottom: '0.75rem', transition: 'background 0.15s, border-color 0.15s', position: 'relative' }}
                 onDragOver={e => { e.preventDefault(); setIsDragging(true) }}
                 onDragLeave={() => setIsDragging(false)}
                 onDrop={e => { e.preventDefault(); setIsDragging(false); handleFile(e.dataTransfer.files[0]) }}>
@@ -524,23 +456,25 @@ export default function App() {
                     <img src={imagePreview} alt="The image you selected, shown as a preview" style={{ width: '100%', maxHeight: '320px', objectFit: 'cover', display: 'block' }} />
                     {scanAnim && (
                       <div style={{ position: 'absolute', inset: 0, overflow: 'hidden', pointerEvents: 'none' }} aria-hidden="true">
-                        <div style={{ position: 'absolute', left: 0, right: 0, height: '2px', background: `linear-gradient(90deg,transparent,${accent},${accentCyan},transparent)`, animation: 'scan 1.4s ease-in-out infinite', boxShadow: `0 0 12px ${accent}` }} />
-                        <div style={{ position: 'absolute', top: '10px', left: '10px', background: `${accent}ee`, color: '#fff', padding: '4px 12px', borderRadius: '20px', fontSize: '0.68rem', fontWeight: 700, letterSpacing: '0.08em', display: 'flex', alignItems: 'center', gap: '5px' }}>
-                          <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#fff', animation: 'pulse 0.8s infinite' }} />SCANNING
+                        <div style={{ position: 'absolute', left: 0, right: 0, height: '2px', background: 'rgba(22,22,22,0.85)', animation: 'scan 1.4s ease-in-out infinite' }} />
+                        <div style={{ position: 'absolute', top: '10px', left: '10px', background: 'rgba(22,22,22,0.9)', color: '#fff', padding: '4px 12px', borderRadius: '4px', fontSize: '0.68rem', fontWeight: 600, letterSpacing: '0.08em', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#fff', animation: 'pulse 0.9s infinite' }} />ANALYZING
                         </div>
                       </div>
                     )}
-                    <button onClick={clearImage} aria-label="Remove image" style={{ position: 'absolute', top: '10px', right: '10px', background: 'rgba(0,0,0,0.7)', border: 'none', color: '#fff', borderRadius: '50%', width: '34px', height: '34px', cursor: 'pointer', fontSize: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2 }}>✕</button>
-                    <div style={{ position: 'absolute', bottom: '10px', left: '10px', background: 'rgba(0,0,0,0.72)', padding: '3px 10px', borderRadius: '6px', fontSize: '0.7rem', color: '#d4d4d8', zIndex: 2, maxWidth: '65%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <button onClick={clearImage} aria-label="Remove image" style={{ position: 'absolute', top: '10px', right: '10px', background: 'rgba(255,255,255,0.92)', border: '1px solid #d0d0d0', color: ink, borderRadius: '4px', width: '30px', height: '30px', cursor: 'pointer', fontSize: '0.9rem', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2, lineHeight: 1 }}>×</button>
+                    <div style={{ position: 'absolute', bottom: '10px', left: '10px', background: 'rgba(255,255,255,0.92)', border: '1px solid #ddd', padding: '3px 10px', borderRadius: '4px', fontSize: '0.72rem', color: inkSoft, zIndex: 2, maxWidth: '65%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {imageFile?.name}{result?.cached ? ' · cached result' : ''}
                     </div>
                   </div>
                 ) : (
                   <button type="button" onClick={() => fileInputRef.current?.click()} style={{ display: 'block', width: '100%', padding: '3rem 1.5rem', textAlign: 'center', cursor: 'pointer', minHeight: '190px', background: 'none', border: 'none', color: 'inherit', fontFamily: 'inherit' }}>
-                    <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                      <span style={{ width: '56px', height: '56px', borderRadius: '14px', background: `${accent}12`, border: `1px solid ${accent}22`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.5rem', margin: '0 auto 1rem' }}>🖼️</span>
-                      <span style={{ color: textSoft, fontWeight: 500, fontSize: '0.93rem' }}>Drop your image or <span style={{ color: accent, fontWeight: 700 }}>browse</span></span>
-                      <span style={{ color: textMuted, fontSize: '0.76rem', marginTop: '4px' }}>PNG · JPG · WEBP · up to 20MB</span>
+                    <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
+                      <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#8a8a8a" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ marginBottom: '8px' }}>
+                        <rect x="3" y="5" width="18" height="14" rx="2" /><circle cx="9" cy="10" r="1.6" /><path d="M5 17l4.5-4.5 3 3L16 12l3 3.5" />
+                      </svg>
+                      <span style={{ color: ink, fontWeight: 500, fontSize: '0.93rem' }}>Drop an image here, or <span style={{ textDecoration: 'underline', textUnderlineOffset: '3px' }}>browse</span></span>
+                      <span style={{ color: inkFaint, fontSize: '0.78rem' }}>PNG, JPG or WEBP, up to 20 MB</span>
                     </span>
                   </button>
                 )}
@@ -551,9 +485,9 @@ export default function App() {
             {/* URL input */}
             {mode === 'url' && (
               <div style={{ marginBottom: '0.75rem' }}>
-                <input type="url" value={urlInput} onChange={e => setUrlInput(e.target.value)} placeholder="https://example.com/photo.jpg" aria-label="Image URL"
-                  style={{ width: '100%', background: 'rgba(255,255,255,0.04)', border: `1px solid ${border}`, borderRadius: '12px', padding: '14px 16px', color: textPrimary, fontSize: '0.92rem', outline: 'none', fontFamily: 'inherit', boxSizing: 'border-box' }} />
-                <p style={{ color: textMuted, fontSize: '0.72rem', margin: '6px 2px 0' }}>The server fetches the image directly (bypasses CORS). Private/internal addresses are rejected.</p>
+                <input type="url" value={urlInput} onChange={e => setUrlInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleDetect()} placeholder="https://example.com/photo.jpg" aria-label="Image URL"
+                  style={{ width: '100%', background: '#fff', border: '1px solid #c9c9c9', borderRadius: '6px', padding: '13px 14px', color: ink, fontSize: '0.92rem', outline: 'none', fontFamily: 'inherit', boxSizing: 'border-box' }} />
+                <p style={{ color: inkFaint, fontSize: '0.75rem', margin: '6px 2px 0' }}>The server fetches the image directly. Private/internal addresses are rejected.</p>
               </div>
             )}
 
@@ -561,35 +495,35 @@ export default function App() {
             {mode === 'batch' && (
               <div style={{ marginBottom: '0.75rem' }}>
                 <div
-                  style={{ background: isDragging ? `${accent}08` : 'rgba(255,255,255,0.02)', border: `2px dashed ${isDragging ? accent : border}`, borderRadius: '14px', padding: '1.6rem 1rem', textAlign: 'center', cursor: 'pointer', marginBottom: '8px' }}
+                  style={{ background: isDragging ? '#f0f0f0' : surface, border: `1.5px dashed ${isDragging ? ink : '#c9c9c9'}`, borderRadius: '8px', padding: '1.6rem 1rem', textAlign: 'center', cursor: 'pointer', marginBottom: '8px', fontSize: '0.86rem', color: inkSoft }}
                   onClick={() => batchInputRef.current?.click()}
                   onDragOver={e => { e.preventDefault(); setIsDragging(true) }}
                   onDragLeave={() => setIsDragging(false)}
                   onDrop={e => { e.preventDefault(); setIsDragging(false); addBatchFiles(e.dataTransfer.files) }}>
-                  🗂️ Drop up to 10 images here — they're analyzed one by one
+                  Drop up to 10 images here — they are analyzed one by one
                 </div>
                 <input ref={batchInputRef} type="file" accept="image/*" multiple style={{ display: 'none' }} onChange={e => addBatchFiles(e.target.files)} />
                 <div style={{ display: 'flex', gap: '6px', marginBottom: '8px' }}>
                   <input type="url" value={urlInput} onChange={e => setUrlInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && addBatchUrl()} placeholder="…or add an image URL to the batch" aria-label="Add URL to batch"
-                    style={{ flex: 1, background: 'rgba(255,255,255,0.04)', border: `1px solid ${border}`, borderRadius: '10px', padding: '10px 12px', color: textPrimary, fontSize: '0.84rem', outline: 'none', fontFamily: 'inherit', minWidth: 0 }} />
-                  <button onClick={addBatchUrl} style={{ background: `${accent}22`, border: `1px solid ${accent}55`, color: accent, borderRadius: '10px', padding: '10px 14px', fontWeight: 700, cursor: 'pointer', fontSize: '0.84rem', fontFamily: 'inherit' }}>+ Add</button>
+                    style={{ flex: 1, background: '#fff', border: '1px solid #c9c9c9', borderRadius: '6px', padding: '10px 12px', color: ink, fontSize: '0.85rem', outline: 'none', fontFamily: 'inherit', minWidth: 0 }} />
+                  <button onClick={addBatchUrl} style={{ background: '#fff', border: '1px solid #161616', color: ink, borderRadius: '6px', padding: '10px 14px', fontWeight: 600, cursor: 'pointer', fontSize: '0.85rem', fontFamily: 'inherit' }}>Add</button>
                 </div>
                 {batchFiles.length > 0 && (
                   <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
                     {batchFiles.map((b, i) => (
-                      <li key={i} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 10px', background: 'rgba(255,255,255,0.02)', border: `1px solid ${border}`, borderRadius: '10px', marginBottom: '6px', fontSize: '0.8rem' }}>
-                        {b.preview ? <img src={b.preview} alt="" style={{ width: 34, height: 34, objectFit: 'cover', borderRadius: 6 }} /> : <span style={{ width: 34, height: 34, borderRadius: 6, background: `${accentCyan}18`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>🔗</span>}
-                        <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: textSoft }}>{b.name}</span>
-                        {b.status === 'queued' && <span style={{ color: textMuted }}>queued</span>}
-                        {b.status === 'pending' && batchIndex === i && <span style={{ color: accent }}>analyzing…</span>}
-                        {b.status === 'error' && <span style={{ color: '#f87171' }} title={b.error}>✕ failed</span>}
+                      <li key={i} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 10px', background: '#fff', border: `1px solid ${border}`, borderRadius: '6px', marginBottom: '6px', fontSize: '0.8rem' }}>
+                        {b.preview ? <img src={b.preview} alt="" style={{ width: 34, height: 34, objectFit: 'cover', borderRadius: 4 }} /> : <span style={{ width: 34, height: 34, borderRadius: 4, background: surface, border: `1px solid ${border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.7rem', color: inkFaint }}>URL</span>}
+                        <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: inkSoft }}>{b.name}</span>
+                        {b.status === 'queued' && <span style={{ color: inkFaint }}>queued</span>}
+                        {b.status === 'pending' && batchIndex === i && <span style={{ color: ink }}>analyzing…</span>}
+                        {b.status === 'error' && <span style={{ color: inkSoft }} title={b.error}>failed</span>}
                         {b.status === 'done' && b.result && (
-                          <button onClick={() => { setResult(b.result); setMode('upload'); setImageFile(b.file || null); setImagePreview(b.preview || null); animateCounter(b.result.score) }}
-                            style={{ background: b.result.score >= 60 ? 'rgba(239,68,68,0.12)' : 'rgba(34,197,94,0.12)', border: `1px solid ${b.result.score >= 60 ? 'rgba(239,68,68,0.3)' : 'rgba(34,197,94,0.3)'}`, color: b.result.score >= 60 ? '#f87171' : '#4ade80', borderRadius: '20px', padding: '3px 10px', fontWeight: 700, cursor: 'pointer', fontSize: '0.75rem', fontFamily: 'inherit' }}>
-                            {b.result.score}% {b.result.verdict?.emoji || ''}
+                          <button onClick={() => { setResult(b.result); setMode('upload'); setImageFile(b.file || null); setImagePreview(b.preview || null) }}
+                            style={{ background: b.result.score >= 60 ? '#161616' : '#fff', border: '1px solid #161616', color: b.result.score >= 60 ? '#fff' : ink, borderRadius: '4px', padding: '3px 10px', fontWeight: 600, cursor: 'pointer', fontSize: '0.76rem', fontFamily: 'inherit', fontVariantNumeric: 'tabular-nums' }}>
+                            {b.result.score}% AI
                           </button>
                         )}
-                        <button onClick={() => setBatchFiles(list => list.filter((_, j) => j !== i))} aria-label={`Remove ${b.name}`} style={{ background: 'none', border: 'none', color: textMuted, cursor: 'pointer', fontSize: '0.9rem' }}>✕</button>
+                        <button onClick={() => setBatchFiles(list => list.filter((_, j) => j !== i))} aria-label={`Remove ${b.name}`} style={{ background: 'none', border: 'none', color: inkFaint, cursor: 'pointer', fontSize: '0.9rem', lineHeight: 1 }}>×</button>
                       </li>
                     ))}
                   </ul>
@@ -599,111 +533,112 @@ export default function App() {
 
             {/* Loading */}
             {isLoading && mode !== 'batch' && (
-              <div role="status" aria-live="polite" style={{ background: 'rgba(255,255,255,0.03)', border: `1px solid ${border}`, borderRadius: '14px', padding: '1.25rem', marginBottom: '0.75rem' }}>
+              <div role="status" aria-live="polite" style={{ background: surface, border: `1px solid ${border}`, borderRadius: '8px', padding: '1.25rem', marginBottom: '0.75rem' }}>
                 <div style={{ display: 'grid', gridTemplateColumns: `repeat(${loadingSteps.length},1fr)`, gap: '4px', marginBottom: '0.8rem' }}>
                   {loadingSteps.map((s, i) => (
-                    <div key={s} style={{ textAlign: 'center' }}>
-                      <div style={{ width: '26px', height: '26px', borderRadius: '50%', background: i < loadingStep ? `${accent}20` : i === loadingStep ? `linear-gradient(135deg,${accent},${accentCyan})` : 'rgba(255,255,255,0.05)', border: `1.5px solid ${i <= loadingStep ? accent : border}`, margin: '0 auto 5px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.66rem', color: i < loadingStep ? accent : i === loadingStep ? '#fff' : textMuted, transition: 'all 0.35s', animation: i === loadingStep ? 'ring 1s ease infinite' : 'none' }}>
+                    <div key={s} style={{ textAlign: 'left' }}>
+                      <div style={{ width: '24px', height: '24px', borderRadius: '50%', background: i < loadingStep ? '#d9d9d9' : i === loadingStep ? ink : '#ececec', border: `1px solid ${i <= loadingStep ? ink : 'transparent'}`, margin: '0 0 5px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.64rem', color: i < loadingStep ? ink : i === loadingStep ? '#fff' : inkFaint, transition: 'all 0.3s', fontVariantNumeric: 'tabular-nums' }}>
                         {i < loadingStep ? '✓' : i + 1}
                       </div>
-                      <div style={{ fontSize: '0.6rem', color: i <= loadingStep ? accent : textMuted, fontWeight: i === loadingStep ? 700 : 400 }}>{s}</div>
+                      <div style={{ fontSize: '0.66rem', color: i <= loadingStep ? ink : inkFaint, fontWeight: i === loadingStep ? 600 : 400 }}>{s}</div>
                     </div>
                   ))}
                 </div>
-                <div style={{ background: 'rgba(255,255,255,0.06)', borderRadius: '4px', height: '3px', overflow: 'hidden' }}>
-                  <div style={{ height: '100%', background: `linear-gradient(90deg,${accent},${accentCyan})`, borderRadius: '4px', width: `${((loadingStep + 1) / loadingSteps.length) * 100}%`, transition: 'width 0.7s ease' }} />
+                <div style={{ background: '#e8e8e8', borderRadius: '2px', height: '3px', overflow: 'hidden' }}>
+                  <div style={{ height: '100%', background: ink, borderRadius: '2px', width: `${((loadingStep + 1) / loadingSteps.length) * 100}%`, transition: 'width 0.7s ease' }} />
                 </div>
               </div>
             )}
 
             {/* Error */}
             {error && (
-              <div role="alert" style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: '10px', padding: '0.9rem 1.1rem', color: '#fca5a5', fontSize: '0.87rem', marginBottom: '0.75rem' }}>
-                ⚠️ {error}
+              <div role="alert" style={{ background: '#f5f5f5', border: '1px solid #161616', borderLeftWidth: '3px', borderRadius: '4px', padding: '0.9rem 1.1rem', color: ink, fontSize: '0.87rem', marginBottom: '0.75rem' }}>
+                {error}
               </div>
             )}
 
-            {/* ── Verdict Card ── */}
+            {/* Verdict card */}
             {result_ && mode !== 'batch' && (
-              <div style={{ border: `1px solid ${verdict.color}28`, borderRadius: '18px', overflow: 'hidden', marginBottom: '0.75rem', animation: 'reveal 0.5s cubic-bezier(0.34,1.56,0.64,1)', boxShadow: `0 0 60px ${verdict.glow}` }}>
-                <div style={{ padding: '2rem 1.5rem', textAlign: 'center', background: `${verdict.color}05`, borderBottom: `1px solid ${border}`, position: 'relative', overflow: 'hidden' }}>
-                  <div style={{ fontSize: '2.5rem', marginBottom: '0.4rem', animation: 'bounceIn 0.4s ease' }}>{verdict.emoji}</div>
-                  <div style={{ fontSize: 'clamp(3rem,10vw,5rem)', fontWeight: 900, color: verdict.color, lineHeight: 1, letterSpacing: '-0.04em', fontVariantNumeric: 'tabular-nums' }} aria-label={`AI probability ${result_.score} percent, uncertainty band ${result_.band?.label}`}>{displayScore}%</div>
-                  <div style={{ marginTop: '0.6rem', display: 'inline-block', padding: '4px 16px', borderRadius: '20px', background: `${verdict.color}15`, border: `1px solid ${verdict.color}28`, fontSize: '0.88rem', fontWeight: 700, color: verdict.color }}>{verdict.line1}</div>
-                  <div style={{ marginTop: '10px', fontSize: '0.78rem', color: textMuted }}>
-                    uncertainty band <strong style={{ color: textSoft }}>{result_.band?.label}</strong>{result_.cached ? ' · instant (cached)' : ''}{result_.local ? ' · local only' : ''}
+              <div style={{ border: '1px solid #161616', borderRadius: '8px', overflow: 'hidden', marginBottom: '0.75rem', background: '#fff', animation: 'reveal 0.35s ease' }}>
+                <div style={{ padding: '1.75rem 1.5rem', borderBottom: `1px solid ${border}` }}>
+                  <div style={{ fontSize: '0.72rem', fontWeight: 600, color: inkFaint, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '0.75rem' }}>Verdict {vstyle.mark} {vstyle.note}</div>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: '14px', flexWrap: 'wrap' }}>
+                    <div style={{ fontSize: 'clamp(2.8rem,9vw,4.2rem)', fontWeight: 700, color: ink, lineHeight: 1, letterSpacing: '-0.03em', fontVariantNumeric: 'tabular-nums' }} aria-label={`AI probability ${result_.score} percent, uncertainty band ${result_.band?.label}`}>{displayScore}%</div>
+                    <div style={{ fontSize: '0.95rem', color: inkSoft, maxWidth: '280px', lineHeight: 1.5 }}>chance this image is AI-generated</div>
+                  </div>
+                  <div style={{ marginTop: '0.9rem', fontSize: '0.8rem', color: inkFaint }}>
+                    {verdict.line1} · uncertainty band <strong style={{ color: inkSoft, fontWeight: 600 }}>{result_.band?.label}</strong>{result_.cached ? ' · instant (cached)' : ''}{result_.local ? ' · local analysis only' : ''}
                   </div>
                 </div>
 
-                {/* Degraded banner — graceful failure made visible */}
+                {/* Degraded banner */}
                 {result_.degraded && (
-                  <div style={{ padding: '0.7rem 1.5rem', background: 'rgba(234,179,8,0.08)', borderBottom: `1px solid ${border}`, fontSize: '0.78rem', color: '#fbbf24' }}>
-                    ⚠ Reduced-evidence mode: {result_.degradedReason || 'some detection models were unavailable'}. Treat this verdict as provisional.
+                  <div style={{ padding: '0.7rem 1.5rem', background: surface, borderBottom: `1px solid ${border}`, fontSize: '0.8rem', color: ink, borderLeft: '3px solid #161616' }}>
+                    Reduced-evidence mode: {result_.degradedReason || 'some detection models were unavailable'}. Treat this verdict as provisional.
                   </div>
                 )}
 
-                <div style={{ padding: '1.25rem 1.5rem', borderBottom: `1px solid ${border}`, background: 'rgba(255,255,255,0.01)' }}>
-                  <p style={{ margin: '0 0 0.5rem', fontSize: '1rem', lineHeight: 1.75, color: textPrimary }}>{verdict.line2}</p>
-                  <p style={{ margin: 0, fontSize: '0.83rem', color: textMuted, lineHeight: 1.6 }}>{verdict.sub}</p>
-                  <div style={{ marginTop: '0.75rem', fontSize: '0.75rem', color: textMuted, display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-                    <span>Confidence: <span style={{ color: result_.confidence === 'high' ? '#4ade80' : result_.confidence === 'medium' ? '#fbbf24' : '#f87171', fontWeight: 600 }}>{result_.confidence}</span></span>
-                    {result_.layers?.models?.disagreement && <span style={{ color: '#fbbf24' }}>⚠ Models disagreed</span>}
+                <div style={{ padding: '1.25rem 1.5rem', borderBottom: `1px solid ${border}` }}>
+                  <p style={{ margin: '0 0 0.5rem', fontSize: '0.98rem', lineHeight: 1.7, color: ink }}>{verdict.line2}</p>
+                  <p style={{ margin: 0, fontSize: '0.85rem', color: inkSoft, lineHeight: 1.65 }}>{verdict.sub}</p>
+                  <div style={{ marginTop: '0.9rem', fontSize: '0.76rem', color: inkFaint, display: 'flex', gap: '14px', flexWrap: 'wrap' }}>
+                    <span>Confidence: <strong style={{ color: ink, fontWeight: 600 }}>{result_.confidence}</strong></span>
+                    {result_.layers?.models?.disagreement && <span style={{ color: inkSoft }}>Models disagreed</span>}
                     {result_.layers?.models?.available && <span>{result_.layers.models.results.length} models{result_.layers.models.failed?.length ? ` · ${result_.layers.models.failed.length} unavailable` : ''}</span>}
                     {result_.source === 'url' && <span>via URL</span>}
                   </div>
                 </div>
 
                 {/* Actions: details / share / feedback */}
-                <div style={{ padding: '0.9rem 1.5rem', background: 'rgba(255,255,255,0.01)' }}>
+                <div style={{ padding: '1rem 1.5rem', background: surface }}>
                   <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', marginBottom: '6px' }}>
-                    <button onClick={() => setShowDetails(!showDetails)} aria-expanded={showDetails} style={{ background: 'none', border: `1px solid ${border}`, cursor: 'pointer', fontSize: '0.78rem', color: textSoft, padding: '7px 12px', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '6px', minHeight: '36px', fontFamily: 'inherit' }}>
-                      <span style={{ fontSize: '0.7rem', display: 'inline-block', transform: showDetails ? 'rotate(90deg)' : 'none', transition: 'transform 0.2s' }}>▶</span>
-                      {showDetails ? 'Hide' : 'View'} forensic breakdown
+                    <button onClick={() => setShowDetails(!showDetails)} aria-expanded={showDetails} style={{ background: '#fff', border: '1px solid #c9c9c9', cursor: 'pointer', fontSize: '0.8rem', color: ink, padding: '7px 12px', borderRadius: '5px', display: 'flex', alignItems: 'center', gap: '7px', minHeight: '36px', fontFamily: 'inherit' }}>
+                      <span style={{ fontSize: '0.65rem', display: 'inline-block', transform: showDetails ? 'rotate(90deg)' : 'none', transition: 'transform 0.2s' }}>▸</span>
+                      {showDetails ? 'Hide forensic breakdown' : 'View forensic breakdown'}
                     </button>
                     {!result_.local && (
-                      <button onClick={handleShare} disabled={sharing} style={{ background: sharing ? 'rgba(255,255,255,0.05)' : `${accentCyan}18`, border: `1px solid ${accentCyan}40`, color: accentCyan, borderRadius: '8px', padding: '7px 12px', fontSize: '0.78rem', fontWeight: 600, cursor: sharing ? 'wait' : 'pointer', minHeight: '36px', fontFamily: 'inherit' }}>
-                        {sharing ? 'Creating link…' : '🔗 Share report'}
+                      <button onClick={handleShare} disabled={sharing} style={{ background: '#fff', border: sharing ? '1px solid #d0d0d0' : '1px solid #161616', color: sharing ? inkFaint : ink, borderRadius: '5px', padding: '7px 12px', fontSize: '0.8rem', fontWeight: 600, cursor: sharing ? 'wait' : 'pointer', minHeight: '36px', fontFamily: 'inherit' }}>
+                        {sharing ? 'Creating link…' : 'Share report'}
                       </button>
                     )}
                   </div>
                   {shareUrl && (
-                    <div style={{ fontSize: '0.75rem', color: '#4ade80', wordBreak: 'break-all', background: 'rgba(34,197,94,0.07)', border: '1px solid rgba(34,197,94,0.2)', borderRadius: '8px', padding: '8px 10px' }}>
-                      ✓ Link copied — <a href={shareUrl} style={{ color: '#4ade80' }}>{shareUrl}</a> (results only, no image, expires in 7 days)
+                    <div style={{ fontSize: '0.76rem', color: ink, background: '#fff', border: `1px solid ${border}`, borderRadius: '5px', padding: '8px 10px', wordBreak: 'break-all' }}>
+                      Link copied — <a href={shareUrl} style={{ color: ink }}>{shareUrl}</a> (results only, no image, expires in 7 days)
                     </div>
                   )}
 
                   {/* Feedback */}
-                  <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: `1px solid ${border}`, fontSize: '0.78rem', color: textMuted }}>
+                  <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid #e0e0e0', fontSize: '0.8rem', color: inkSoft }}>
                     {feedbackSent ? (
-                      <span style={{ color: '#4ade80' }}>✓ Thanks — your feedback helps calibrate accuracy.</span>
+                      <span style={{ color: ink }}>Thanks for the feedback — it helps calibrate accuracy.</span>
                     ) : (
                       <span style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                         Was this verdict right?
-                        <button onClick={() => sendFeedback('correct')} style={{ background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.25)', color: '#4ade80', borderRadius: '7px', padding: '4px 10px', fontSize: '0.74rem', cursor: 'pointer', fontFamily: 'inherit' }}>👍 Correct</button>
-                        <button onClick={() => sendFeedback('wrong_real')} style={{ background: 'rgba(255,255,255,0.05)', border: `1px solid ${border}`, color: textSoft, borderRadius: '7px', padding: '4px 10px', fontSize: '0.74rem', cursor: 'pointer', fontFamily: 'inherit' }}>It's actually real</button>
-                        <button onClick={() => sendFeedback('wrong_ai')} style={{ background: 'rgba(255,255,255,0.05)', border: `1px solid ${border}`, color: textSoft, borderRadius: '7px', padding: '4px 10px', fontSize: '0.74rem', cursor: 'pointer', fontFamily: 'inherit' }}>It's actually AI</button>
+                        <button onClick={() => sendFeedback('correct')} style={{ background: '#fff', border: '1px solid #161616', color: ink, borderRadius: '5px', padding: '4px 10px', fontSize: '0.76rem', cursor: 'pointer', fontFamily: 'inherit' }}>Correct</button>
+                        <button onClick={() => sendFeedback('wrong_real')} style={{ background: '#fff', border: '1px solid #c9c9c9', color: inkSoft, borderRadius: '5px', padding: '4px 10px', fontSize: '0.76rem', cursor: 'pointer', fontFamily: 'inherit' }}>It&apos;s actually real</button>
+                        <button onClick={() => sendFeedback('wrong_ai')} style={{ background: '#fff', border: '1px solid #c9c9c9', color: inkSoft, borderRadius: '5px', padding: '4px 10px', fontSize: '0.76rem', cursor: 'pointer', fontFamily: 'inherit' }}>It&apos;s actually AI</button>
                       </span>
                     )}
                   </div>
 
                   {showDetails && (
-                    <div style={{ marginTop: '1rem', paddingTop: '1rem', borderTop: `1px solid ${border}`, animation: 'fadeUp 0.25s ease' }}>
-                      {/* Model scores */}
-                      <div style={{ fontSize: '0.66rem', color: textMuted, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '0.8rem' }}>AI model scores</div>
+                    <div style={{ marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid #e0e0e0', animation: 'fadeUp 0.2s ease' }}>
+                      <div style={{ fontSize: '0.7rem', color: inkFaint, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '0.8rem' }}>Model scores</div>
                       {result_.layers?.models?.available ? (
                         (result_.layers.models.results || []).map(m => (
                           <div key={m.name} style={{ marginBottom: '0.9rem' }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', marginBottom: '4px' }}>
-                              <span style={{ color: textSoft }}>{m.shortName} <span style={{ color: textMuted, fontSize: '0.7rem' }}>({Math.round((m.weight || 0) * 100)}%)</span></span>
-                              <span style={{ color: m.aiScore >= 50 ? '#f87171' : '#4ade80', fontWeight: 700 }}>{m.aiScore}%</span>
+                              <span style={{ color: inkSoft }}>{m.shortName} <span style={{ color: inkFaint, fontSize: '0.72rem' }}>({Math.round((m.weight || 0) * 100)}% weight)</span></span>
+                              <span style={{ color: ink, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{m.aiScore}%</span>
                             </div>
-                            <div style={{ background: 'rgba(255,255,255,0.06)', borderRadius: '4px', height: '6px', overflow: 'hidden' }}>
-                              <div style={{ height: '100%', background: m.aiScore >= 50 ? 'linear-gradient(90deg,#ef4444,#f97316)' : 'linear-gradient(90deg,#22c55e,#10b981)', borderRadius: '4px', width: `${m.aiScore}%`, transition: 'width 0.9s cubic-bezier(0.34,1.2,0.64,1)' }} />
+                            <div style={{ background: '#e8e8e8', borderRadius: '2px', height: '5px', overflow: 'hidden' }}>
+                              <div style={{ height: '100%', background: m.aiScore >= 50 ? '#161616' : '#a8a8a8', borderRadius: '2px', width: `${m.aiScore}%`, transition: 'width 0.7s ease' }} />
                             </div>
                           </div>
                         ))
                       ) : (
-                        <p style={{ color: textMuted, fontSize: '0.8rem', margin: '0 0 0.8rem' }}>Models were unavailable — verdict based on heuristic forensics only{result_.layers?.models?.reason ? ` (${result_.layers.models.reason})` : ''}.</p>
+                        <p style={{ color: inkSoft, fontSize: '0.82rem', margin: '0 0 0.8rem' }}>Models were unavailable — verdict based on heuristic forensics only{result_.layers?.models?.reason ? ` (${result_.layers.models.reason})` : ''}.</p>
                       )}
 
                       {layerDefs.map(l => <LayerBlock key={l.title} {...l} />)}
@@ -716,43 +651,43 @@ export default function App() {
             {/* CTA */}
             {mode === 'batch' ? (
               <button onClick={handleBatch} disabled={isLoading || !batchFiles.length}
-                style={{ width: '100%', background: isLoading || !batchFiles.length ? 'rgba(255,255,255,0.05)' : `linear-gradient(135deg,${accent},${accentCyan})`, border: 'none', color: isLoading || !batchFiles.length ? textMuted : '#fff', padding: '1rem', borderRadius: '12px', fontSize: '0.97rem', fontWeight: 700, cursor: isLoading ? 'wait' : 'pointer', minHeight: '52px', fontFamily: 'inherit' }}>
-                {isLoading ? `⏳ Analyzing ${batchIndex + 1}/${batchFiles.length}…` : `🔍 Analyze ${batchFiles.length || ''} image${batchFiles.length === 1 ? '' : 's'} — Free`}
+                style={{ width: '100%', background: isLoading || !batchFiles.length ? '#e4e4e4' : ink, border: 'none', color: isLoading || !batchFiles.length ? '#9a9a9a' : '#fff', padding: '1rem', borderRadius: '6px', fontSize: '0.95rem', fontWeight: 600, cursor: isLoading ? 'wait' : 'pointer', minHeight: '52px', fontFamily: 'inherit' }}>
+                {isLoading ? `Analyzing ${batchIndex + 1}/${batchFiles.length}…` : `Analyze ${batchFiles.length || ''} image${batchFiles.length === 1 ? '' : 's'}`}
               </button>
             ) : mode === 'url' ? (
               <button onClick={handleDetect} disabled={isLoading}
-                style={{ width: '100%', background: isLoading ? 'rgba(255,255,255,0.05)' : `linear-gradient(135deg,${accent},${accentCyan})`, border: 'none', color: isLoading ? textMuted : '#fff', padding: '1rem', borderRadius: '12px', fontSize: '0.97rem', fontWeight: 700, cursor: isLoading ? 'wait' : 'pointer', minHeight: '52px', fontFamily: 'inherit' }}>
-                {isLoading ? '⏳ Fetching & analyzing…' : result ? '🔄 Analyze Again' : '🔗 Detect This URL — Free'}
+                style={{ width: '100%', background: isLoading ? '#e4e4e4' : ink, border: 'none', color: isLoading ? '#9a9a9a' : '#fff', padding: '1rem', borderRadius: '6px', fontSize: '0.95rem', fontWeight: 600, cursor: isLoading ? 'wait' : 'pointer', minHeight: '52px', fontFamily: 'inherit' }}>
+                {isLoading ? 'Fetching & analyzing…' : result ? 'Analyze another URL' : 'Detect this URL'}
               </button>
             ) : (
               <button onClick={imageFile ? handleDetect : () => fileInputRef.current?.click()} disabled={isLoading}
-                style={{ width: '100%', background: isLoading ? 'rgba(255,255,255,0.05)' : `linear-gradient(135deg,${accent},${accentCyan})`, border: 'none', color: isLoading ? textMuted : '#fff', padding: '1rem', borderRadius: '12px', fontSize: '0.97rem', fontWeight: 700, cursor: isLoading ? 'wait' : 'pointer', minHeight: '52px', fontFamily: 'inherit' }}>
-                {isLoading ? '⏳ Analyzing...' : result ? '🔄 Analyze Again' : imageFile ? (localMode ? '🔒 Run Local Analysis' : '🔍 Detect Now — Free') : '📁 Upload an Image'}
+                style={{ width: '100%', background: isLoading ? '#e4e4e4' : ink, border: 'none', color: isLoading ? '#9a9a9a' : '#fff', padding: '1rem', borderRadius: '6px', fontSize: '0.95rem', fontWeight: 600, cursor: isLoading ? 'wait' : 'pointer', minHeight: '52px', fontFamily: 'inherit' }}>
+                {isLoading ? 'Analyzing…' : result ? 'Analyze again' : imageFile ? (localMode ? 'Run local analysis' : 'Detect now') : 'Upload an image'}
               </button>
             )}
-            <p style={{ color: textMuted, fontSize: '0.72rem', textAlign: 'center', marginTop: '0.75rem' }}>
-              {localMode ? '🔒 Local mode active — this image never left your device.' : '🔒 Images analyzed transiently and never stored · 12 free checks/min'}
+            <p style={{ color: inkFaint, fontSize: '0.75rem', textAlign: 'center', marginTop: '0.75rem' }}>
+              {localMode ? 'Local mode active — this image never left your device.' : 'Images are analyzed transiently and never stored · 12 free checks per minute'}
             </p>
 
             {/* Session history */}
             {history.length > 0 && (
-              <section aria-label="Your recent analyses" style={{ marginTop: '2rem' }}>
+              <section aria-label="Your recent analyses" style={{ marginTop: '2rem', borderTop: `1px solid ${border}`, paddingTop: '1.25rem' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                  <h2 style={{ fontSize: '0.72rem', fontWeight: 700, color: textMuted, textTransform: 'uppercase', letterSpacing: '0.1em', margin: 0 }}>Recent analyses (this device)</h2>
-                  <button onClick={() => { localStorage.removeItem(HISTORY_KEY); setHistory([]) }} style={{ background: 'none', border: 'none', color: textMuted, fontSize: '0.72rem', cursor: 'pointer', fontFamily: 'inherit' }}>Clear</button>
+                  <h2 style={{ fontSize: '0.72rem', fontWeight: 600, color: inkFaint, textTransform: 'uppercase', letterSpacing: '0.1em', margin: 0 }}>Recent analyses (this device)</h2>
+                  <button onClick={() => { localStorage.removeItem(HISTORY_KEY); setHistory([]) }} style={{ background: 'none', border: 'none', color: inkSoft, fontSize: '0.75rem', cursor: 'pointer', fontFamily: 'inherit', textDecoration: 'underline', textUnderlineOffset: '2px' }}>Clear</button>
                 </div>
                 <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
                   {history.slice(0, 6).map(h => (
-                    <li key={h.id + h.at} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 10px', background: 'rgba(255,255,255,0.02)', border: `1px solid ${border}`, borderRadius: '10px', marginBottom: '5px', fontSize: '0.78rem' }}>
-                      <span>{h.emoji}</span>
-                      <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: textSoft }}>{h.name || h.line1}</span>
-                      {h.local && <span style={{ color: textMuted, fontSize: '0.68rem' }}>local</span>}
-                      <span style={{ color: h.score >= 60 ? '#f87171' : '#4ade80', fontWeight: 700 }}>{h.score}%</span>
-                      <span style={{ color: textMuted, fontSize: '0.68rem' }}>{new Date(h.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                    <li key={h.id + h.at} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 2px', borderBottom: `1px solid ${border}`, fontSize: '0.8rem' }}>
+                      <span style={{ color: inkFaint, fontSize: '0.72rem', width: '28px' }}>{vmark(h.level).mark}</span>
+                      <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: inkSoft }}>{h.name || h.line1}</span>
+                      {h.local && <span style={{ color: inkFaint, fontSize: '0.7rem' }}>local</span>}
+                      <span style={{ color: ink, fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>{h.score}%</span>
+                      <span style={{ color: inkFaint, fontSize: '0.72rem', fontVariantNumeric: 'tabular-nums' }}>{new Date(h.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                     </li>
                   ))}
                 </ul>
-                <p style={{ color: textMuted, fontSize: '0.66rem', margin: '6px 2px 0' }}>Stored only in your browser's localStorage — never on our servers.</p>
+                <p style={{ color: inkFaint, fontSize: '0.7rem', margin: '8px 2px 0' }}>Stored only in your browser — never on our servers.</p>
               </section>
             )}
           </div>
@@ -764,33 +699,33 @@ export default function App() {
             <div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '0.6rem' }}>
                 <Logo size={22} />
-                <span style={{ fontWeight: 800, background: `linear-gradient(135deg,${accent},${accentCyan})`, WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', fontSize: '0.95rem' }}>IsItAI</span>
+                <span style={{ fontWeight: 700, color: ink, fontSize: '0.95rem' }}>IsItAI</span>
               </div>
-              <p style={{ color: textMuted, fontSize: '0.8rem', margin: '0 0 0.5rem', lineHeight: 1.6 }}>Free AI image detection. No account. No paywall. Built for truth.</p>
+              <p style={{ color: textMuted, fontSize: '0.8rem', margin: '0 0 0.5rem', lineHeight: 1.6 }}>Free AI image detection. No account. No paywall.</p>
               <p style={{ color: textMuted, fontSize: '0.75rem', margin: 0 }}>Results are probabilistic, not legal determinations.</p>
             </div>
             <div>
-              <div style={{ fontSize: '0.68rem', fontWeight: 700, color: textMuted, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '0.75rem' }}>Product</div>
+              <div style={{ fontSize: '0.68rem', fontWeight: 600, color: textMuted, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '0.75rem' }}>Product</div>
               {[['home', 'Home'], ['how', 'How it works'], ['detect', 'Try free']].map(([id, label]) => (
                 <button key={id} onClick={() => navigate(id)} style={{ display: 'block', background: 'none', border: 'none', color: textSoft, cursor: 'pointer', fontSize: '0.83rem', padding: '3px 0', marginBottom: '4px', textAlign: 'left', fontFamily: 'inherit' }}>{label}</button>
               ))}
               <Link href="/api-guide" style={{ display: 'block', color: textSoft, fontSize: '0.83rem', textDecoration: 'none', padding: '3px 0' }}>Public API</Link>
             </div>
             <div>
-              <div style={{ fontSize: '0.68rem', fontWeight: 700, color: textMuted, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '0.75rem' }}>Resources</div>
+              <div style={{ fontSize: '0.68rem', fontWeight: 600, color: textMuted, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '0.75rem' }}>Resources</div>
               <Link href="/how-to-detect-ai-images" style={{ display: 'block', color: textSoft, fontSize: '0.83rem', textDecoration: 'none', padding: '3px 0', marginBottom: '4px' }}>Detect AI images guide</Link>
               <Link href="/midjourney-vs-dalle-detector" style={{ display: 'block', color: textSoft, fontSize: '0.83rem', textDecoration: 'none', padding: '3px 0', marginBottom: '4px' }}>Midjourney vs DALL-E</Link>
               <Link href="/ai-video-deepfake-guide" style={{ display: 'block', color: textSoft, fontSize: '0.83rem', textDecoration: 'none', padding: '3px 0', marginBottom: '4px' }}>Deepfakes & video</Link>
             </div>
             <div>
-              <div style={{ fontSize: '0.68rem', fontWeight: 700, color: textMuted, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '0.75rem' }}>Legal</div>
+              <div style={{ fontSize: '0.68rem', fontWeight: 600, color: textMuted, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '0.75rem' }}>Legal</div>
               <Link href="/privacy" style={{ display: 'block', color: textSoft, fontSize: '0.83rem', textDecoration: 'none', padding: '3px 0', marginBottom: '4px' }}>Privacy Policy</Link>
               <Link href="/terms" style={{ display: 'block', color: textSoft, fontSize: '0.83rem', textDecoration: 'none', padding: '3px 0' }}>Terms of Service</Link>
             </div>
           </div>
           <div style={{ maxWidth: '960px', margin: '0 auto', paddingTop: '1.5rem', borderTop: `1px solid ${border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
             <p style={{ color: textMuted, margin: 0, fontSize: '0.78rem' }}>© 2026 IsItAI · Built with Next.js · Powered by Hugging Face</p>
-            <a href="https://github.com/Ali2191/isitai" target="_blank" rel="noreferrer" style={{ color: textMuted, fontSize: '0.78rem', textDecoration: 'none' }}>⭐ Star on GitHub</a>
+            <a href="https://github.com/Ali2191/isitai" target="_blank" rel="noreferrer" style={{ color: textSoft, fontSize: '0.78rem', textDecoration: 'underline', textUnderlineOffset: '2px' }}>Source on GitHub</a>
           </div>
         </footer>
       </main>
@@ -799,29 +734,74 @@ export default function App() {
         * { box-sizing: border-box; margin: 0; padding: 0 }
         html { scroll-behavior: smooth }
         button, a { font-family: inherit }
-        :focus-visible { outline: 2px solid #7c3aed; outline-offset: 2px; border-radius: 6px }
+        :focus-visible { outline: 2px solid #161616; outline-offset: 2px; border-radius: 2px }
+        ::selection { background: #161616; color: #fff }
+        input::placeholder { color: #a5a5a5 }
 
-        @keyframes pIn { from { opacity:0; transform:translateY(10px) } to { opacity:1; transform:translateY(0) } }
-        @keyframes pOut { from { opacity:1; transform:translateY(0) } to { opacity:0; transform:translateY(-6px) } }
-        @keyframes fadeUp { from { opacity:0; transform:translateY(12px) } to { opacity:1; transform:translateY(0) } }
-        @keyframes panelIn { from { opacity:0; transform:translateY(6px) } to { opacity:1; transform:translateY(0) } }
-        @keyframes reveal { from { opacity:0; transform:scale(0.97) translateY(8px) } to { opacity:1; transform:scale(1) translateY(0) } }
-        @keyframes bounceIn { from { opacity:0; transform:scale(0.4) } to { opacity:1; transform:scale(1) } }
+        @keyframes fadeUp { from { opacity:0; transform:translateY(10px) } to { opacity:1; transform:translateY(0) } }
+        @keyframes panelIn { from { opacity:0; transform:translateY(5px) } to { opacity:1; transform:translateY(0) } }
+        @keyframes reveal { from { opacity:0; transform:translateY(8px) } to { opacity:1; transform:translateY(0) } }
         @keyframes scan { 0%{top:-2px;opacity:0} 8%{opacity:1} 92%{opacity:1} 100%{top:100%;opacity:0} }
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.25} }
-        @keyframes ring { 0%,100%{box-shadow:0 0 0 0 rgba(124,58,237,0.4)} 50%{box-shadow:0 0 0 5px rgba(124,58,237,0)} }
 
         @media (max-width: 767px) {
           .desk-nav { display: none !important }
           .mob-menu { display: block !important }
-          .how-grid { grid-template-columns: 1fr !important }
-          .how-grid > div:first-child { border-right: none !important; border-bottom: 1px solid rgba(255,255,255,0.08) }
         }
 
         @media (prefers-reduced-motion: reduce) {
           *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important }
         }
       `}</style>
+    </div>
+  )
+}
+
+// ─── Logo — plain black square with a magnifier, no gradients ────────────────
+const Logo = ({ size = 32 }) => (
+  <svg width={size} height={size} viewBox="0 0 32 32" fill="none" aria-hidden="true">
+    <rect width="32" height="32" rx="6" fill="#161616" />
+    <circle cx="14.5" cy="14.5" r="6" fill="none" stroke="white" strokeWidth="2" />
+    <line x1="19" y1="19" x2="24" y2="24" stroke="white" strokeWidth="2.4" strokeLinecap="round" />
+  </svg>
+)
+
+// ─── Signal badge with explanation tooltip ────────────────────────────────────
+function SignalChip({ s }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <span style={{ position: 'relative', display: 'inline-block' }}>
+      <button type="button" onClick={() => s.why && setOpen(o => !o)} aria-expanded={open ? 'true' : 'false'}
+        style={{ fontSize: '0.72rem', padding: '3px 9px', borderRadius: '4px', background: s.suspicious ? '#161616' : '#ffffff', color: s.suspicious ? '#ffffff' : '#5c5c5c', border: `1px solid ${s.suspicious ? '#161616' : '#d6d6d6'}`, fontWeight: 500, cursor: s.why ? 'pointer' : 'default', fontFamily: 'inherit' }}>
+        {s.suspicious ? '! ' : ''}{s.label}
+      </button>
+      {open && s.why && (
+        <span role="tooltip" style={{ position: 'absolute', zIndex: 30, top: '110%', left: 0, width: 'min(260px, 70vw)', background: '#161616', border: '1px solid #161616', borderRadius: 6, padding: '10px 12px', fontSize: '0.72rem', color: '#f2f2f2', lineHeight: 1.55, boxShadow: '0 6px 20px rgba(0,0,0,0.18)', display: 'block', textAlign: 'left' }}>
+          {s.why}
+        </span>
+      )}
+    </span>
+  )
+}
+
+// ─── Layer block in forensic breakdown ────────────────────────────────────────
+function LayerBlock({ icon, title, layer }) {
+  if (!layer || !(layer.signals || []).length) return null
+  const sc = layer.score ?? layer.aiScore
+  return (
+    <div style={{ marginTop: '0.9rem', paddingTop: '0.9rem', borderTop: '1px solid #e8e8e8' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', marginBottom: '6px' }}>
+        <span style={{ color: '#161616', fontWeight: 600 }}>{icon} · {title}</span>
+        {sc !== undefined && <span style={{ color: sc >= 50 ? '#161616' : '#8a8a8a', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{sc}% suspicious</span>}
+      </div>
+      {sc !== undefined && (
+        <div style={{ background: '#ececec', borderRadius: '3px', height: '5px', overflow: 'hidden', marginBottom: '8px' }}>
+          <div style={{ height: '100%', background: sc >= 50 ? '#161616' : '#b3b3b3', borderRadius: '3px', width: `${sc}%`, transition: 'width 0.7s ease' }} />
+        </div>
+      )}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px' }}>
+        {layer.signals.map((s, i) => <SignalChip key={i} s={s} />)}
+      </div>
     </div>
   )
 }
