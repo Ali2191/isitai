@@ -5,17 +5,13 @@ import { record, note } from '../../../lib/metrics'
 export const runtime = 'nodejs'
 export const maxDuration = 300
 
-// POST /api/bulk — team endpoint. Body: CSV text (URLs) or JSON {urls:[...]}.
-// Auth: Bearer ISITAI_API_KEY. Query ?format=csv for spreadsheet export.
+// POST /api/bulk — batch audit endpoint. Body: CSV text (URLs) or JSON {urls:[...]}.
+// No API key required — internal usage only, protected by per-IP rate limiting.
+// Query ?format=csv for spreadsheet export.
 // Every run is written to an append-only audit log (DATA_DIR/bulk-audit.log).
 export async function POST(request) {
   const t0 = Date.now()
   try {
-    const key = process.env.ISITAI_API_KEY
-    const auth = request.headers.get('authorization') || ''
-    if (!key || !auth.endsWith(key)) {
-      return Response.json({ error: 'Bulk audit requires a team API key (Authorization: Bearer <ISITAI_API_KEY>).' }, { status: 401 })
-    }
     const rl = rateLimit(`bulk:${getClientIp(request)}`, Number(process.env.RATE_LIMIT_BULK || 5), 60_000)
     if (!rl.ok) return rateLimitResponse(rl.retryAfterSec)
 
