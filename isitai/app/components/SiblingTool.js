@@ -28,7 +28,7 @@ const vmark = level => VMARK[level] || { mark: '[?]', note: 'No verdict' }
 
 function verdictCopy(result, kind) {
   const s = result.score, v = result.verdict || {}
-  const noun = kind === 'text' ? 'text' : 'audio'
+  const noun = kind === 'text' ? 'text' : kind === 'audio' ? 'audio' : 'file'
   switch (v.level) {
     case 'definitive-ai': return { line2: `High-confidence evidence across multiple layers puts AI probability at ${s}% (band ${result.band?.label}).`, sub: `Generator fingerprints were found in this ${noun}'s statistics and structure.` }
     case 'likely-ai': return { line2: `We estimate a ${s}% chance this ${noun} is AI-generated (uncertainty band ${result.band?.label}).`, sub: 'More evidence points toward generation than authentic human creation.' }
@@ -49,6 +49,8 @@ export default function SiblingTool({ kind, api, title, intro, placeholder, acce
   const [err, setErr] = useState(null)
   const [res, setRes] = useState(null)
   const [text, setText] = useState('')
+  const [csv, setCsv] = useState('')
+  const [bulkRes, setBulkRes] = useState(null)
   const [file, setFile] = useState(null)
   const [fileName, setFileName] = useState('')
   const [dragOver, setDragOver] = useState(false)
@@ -99,7 +101,10 @@ export default function SiblingTool({ kind, api, title, intro, placeholder, acce
     setErr(null); setRes(null); setFeedbackSent(null); setShareUrl(null); setBusy(true)
     try {
       let r
-      if (kind === 'text') {
+      if (kind === 'bulk') {
+        setBulkRes(null)
+        r = await fetch(api, { method: 'POST', headers: { 'Content-Type': 'text/csv' }, body: csv })
+      } else if (kind === 'text') {
         r = await fetch(api, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) })
       } else {
         if (!file) throw new Error('Choose an audio file first')
@@ -110,8 +115,20 @@ export default function SiblingTool({ kind, api, title, intro, placeholder, acce
       if (!ct.includes('application/json')) throw new Error(`Server returned an unexpected response (HTTP ${r.status}).`)
       const j = await r.json()
       if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
-      setRes(j)
-      pushHistory(j)
+      if (kind === 'bulk') { setBulkRes(j); pushHistory({ id: `bulk-${Date.now()}`, score: Math.round(j.rows.filter(x => !x.error && x.score >= 50).length / Math.max(j.count, 1) * 100), verdict: { level: null }, analyzedAt: Date.now() }) }
+      else { setRes(j); pushHistory(j) }
+    } catch (e) { setErr(String(e.message || e)) } finally { setBusy(false) }
+  }
+
+  async function exportCsv() {
+    if (!csv.trim()) return
+    setErr(null); setBusy(true)
+    try {
+      const r = await fetch(`${api}?format=csv`, { method: 'POST', headers: { 'Content-Type': 'text/csv' }, body: csv })
+      if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error || `HTTP ${r.status}`) }
+      const blob = await r.blob()
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'isitai-bulk-audit.csv'; a.click()
+      URL.revokeObjectURL(a.href)
     } catch (e) { setErr(String(e.message || e)) } finally { setBusy(false) }
   }
 
@@ -157,7 +174,9 @@ export default function SiblingTool({ kind, api, title, intro, placeholder, acce
   ]) : []
 
   const words = text.trim() ? text.trim().split(/\s+/).length : 0
-  const disabled = busy || (kind === 'text' && text.trim().length < 50) || (kind === 'audio' && !file)
+  const urlCount = csv.split(/\s*\n\s*/).map(s => s.trim()).filter(Boolean).length
+  const disabled = busy || (kind === 'text' && text.trim().length < 50) || (kind === 'audio' && !file) || (kind === 'bulk' && urlCount === 0)
+  const bulkFlagged = bulkRes ? bulkRes.rows.filter(x => !x.error && x.score >= 50).length : 0
 
   return (
     <div style={{ minHeight: '100vh', background: '#fff', color: ink, fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' }}>
@@ -173,6 +192,7 @@ export default function SiblingTool({ kind, api, title, intro, placeholder, acce
           <Link href="/isitaudio" style={{ padding: '6px 12px', color: kind === 'audio' ? ink : inkSoft, background: kind === 'audio' ? surface : 'none', border: `1px solid ${kind === 'audio' ? line : 'transparent'}`, borderRadius: 5, textDecoration: 'none', fontSize: '0.84rem', fontWeight: kind === 'audio' ? 600 : 400 }}>Audio</Link>
           <Link href="/how-to-detect-ai-images" style={{ padding: '6px 12px', color: inkSoft, textDecoration: 'none', fontSize: '0.84rem' }}>Guides</Link>
           <Link href="/provenance" style={{ padding: '6px 12px', color: inkSoft, textDecoration: 'none', fontSize: '0.84rem' }}>Provenance</Link>
+          <Link href="/bulk-audit" style={{ padding: '6px 12px', color: kind === 'bulk' ? ink : inkSoft, background: kind === 'bulk' ? surface : 'none', border: `1px solid ${kind === 'bulk' ? line : 'transparent'}`, borderRadius: 5, textDecoration: 'none', fontSize: '0.84rem', fontWeight: kind === 'bulk' ? 600 : 400 }}>Bulk</Link>
           <Link href="/status" style={{ padding: '6px 12px', color: inkSoft, textDecoration: 'none', fontSize: '0.84rem' }}>Status</Link>
           <Link href="/api-guide" style={{ marginLeft: 4, padding: '6px 12px', color: inkSoft, textDecoration: 'none', fontSize: '0.84rem', border: `1px solid ${line}`, borderRadius: 5 }}>API</Link>
         </div>
@@ -180,13 +200,24 @@ export default function SiblingTool({ kind, api, title, intro, placeholder, acce
 
       <main style={{ maxWidth: 860, margin: '0 auto', padding: 'clamp(2rem,5vw,3.5rem) clamp(1rem,4vw,2rem)' }}>
         <p style={{ fontSize: '0.8rem', fontWeight: 600, color: inkFaint, textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: '0.9rem' }}>
-          IsItAI — {kind === 'text' ? 'AI text detector' : 'AI audio & voice-clone detector'}
+          IsItAI — {kind === 'text' ? 'AI text detector' : kind === 'audio' ? 'AI audio & voice-clone detector' : 'Bulk image audit'}
         </p>
         <h1 style={{ fontSize: 'clamp(1.7rem,4.5vw,2.6rem)', fontWeight: 700, margin: '0 0 0.8rem', lineHeight: 1.15, letterSpacing: '-0.02em' }}>{title}</h1>
         <p style={{ color: inkSoft, fontSize: '1rem', lineHeight: 1.75, maxWidth: 640, margin: '0 0 2rem' }}>{intro}</p>
 
         {/* Input */}
-        {kind === 'text' ? (
+        {kind === 'bulk' ? (
+          <div style={{ border: `1px solid ${ink}`, borderRadius: 8, overflow: 'hidden' }}>
+            <textarea
+              value={csv} onChange={e => setCsv(e.target.value)} rows={8} placeholder={placeholder} aria-label="Image URLs to audit, one per line"
+              style={{ width: '100%', boxSizing: 'border-box', border: 'none', outline: 'none', resize: 'vertical', padding: '1rem 1.1rem', fontSize: '0.9rem', lineHeight: 1.7, color: ink, background: '#fff', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', display: 'block' }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem 1rem', borderTop: `1px solid ${line}`, background: surface, fontSize: '0.75rem', color: inkFaint }}>
+              <span>{urlCount} URL{urlCount === 1 ? '' : 's'} · up to 50 audited in parallel{urlCount > 50 ? ' — extras are ignored' : ''}</span>
+              <button onClick={() => { setCsv(''); setRes(null) }} style={{ background: 'none', border: 'none', color: inkSoft, cursor: 'pointer', fontSize: '0.75rem', textDecoration: 'underline', textUnderlineOffset: 2, fontFamily: 'inherit' }}>Clear</button>
+            </div>
+          </div>
+        ) : kind === 'text' ? (
           <div style={{ border: `1px solid ${ink}`, borderRadius: 8, overflow: 'hidden' }}>
             <textarea
               value={text} onChange={e => setText(e.target.value)} rows={10} placeholder={placeholder} aria-label="Paste text to analyze"
@@ -216,9 +247,14 @@ export default function SiblingTool({ kind, api, title, intro, placeholder, acce
               if (f) { setErr(null); setFile(f); setFileName(f.name); setRes(null) }
             }} />
             {file ? (
-              <div>
+              <div style={{ overflow: 'hidden' }}>
                 <div style={{ fontSize: '1.6rem', marginBottom: 6 }}>♪</div>
-                <div style={{ fontWeight: 600, color: ink, fontSize: '0.95rem' }}>{fileName}</div>
+                <div
+                  title={fileName}
+                  style={{ fontWeight: 600, color: ink, fontSize: '0.95rem', maxWidth: '100%', margin: '0 auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', wordBreak: 'break-all', display: 'block' }}
+                >
+                  {fileName.length > 48 ? `${fileName.slice(0, 32)}…${fileName.slice(-13)}` : fileName}
+                </div>
                 <div style={{ color: inkFaint, fontSize: '0.78rem', marginTop: 4 }}>{(file.size / 1024 / 1024).toFixed(2)} MB · click to replace</div>
               </div>
             ) : (
@@ -231,24 +267,83 @@ export default function SiblingTool({ kind, api, title, intro, placeholder, acce
           </label>
         )}
 
-        {kind === 'audio' && file && (
+        {kind === 'audio' && file && objectUrl && (
           <div style={{ marginTop: 12 }}>
             <audio controls preload="metadata" src={objectUrl || undefined} style={{ width: '100%', height: 40 }} aria-label="Audio preview of your upload" />
             <p style={{ color: inkFaint, fontSize: '0.72rem', margin: '6px 0 0' }}>Playback happens locally in your browser — the file is only sent when you press Detect.</p>
           </div>
         )}
 
-        <button onClick={submit} disabled={disabled}
-          style={{ width: '100%', marginTop: 14, background: disabled ? '#e4e4e4' : ink, border: 'none', color: disabled ? '#9a9a9a' : '#fff', padding: '1rem', borderRadius: 6, fontSize: '0.95rem', fontWeight: 600, cursor: busy ? 'wait' : 'pointer', minHeight: 52, fontFamily: 'inherit' }}>
-          {busy ? 'Analyzing…' : res ? `Analyze another ${kind}` : `Detect AI ${kind}`}
-        </button>
-        <p style={{ color: inkFaint, fontSize: '0.75rem', textAlign: 'center', marginTop: '0.6rem' }}>
-          {kind === 'text' ? 'Nothing is stored — passages are analyzed transiently in memory.' : 'Files are decoded in server memory and discarded immediately. Never uploaded anywhere else.'}
-        </p>
+        {kind === 'bulk' ? (
+          <div style={{ display: 'flex', gap: 10, marginTop: 14, flexWrap: 'wrap' }}>
+            <button onClick={submit} disabled={disabled}
+              style={{ flex: 1, minWidth: 200, background: disabled ? '#e4e4e4' : ink, border: 'none', color: disabled ? '#9a9a9a' : '#fff', padding: '1rem', borderRadius: 6, fontSize: '0.95rem', fontWeight: 600, cursor: busy ? 'wait' : 'pointer', minHeight: 52, fontFamily: 'inherit' }}>
+              {busy ? 'Auditing…' : bulkRes ? 'Run audit again' : `Audit ${Math.min(urlCount, 50)} URL${urlCount === 1 ? '' : 's'}`}
+            </button>
+            <button onClick={exportCsv} disabled={disabled}
+              style={{ background: '#fff', border: `1px solid ${ink}`, color: ink, padding: '1rem 1.4rem', borderRadius: 6, fontSize: '0.95rem', fontWeight: 600, cursor: busy ? 'wait' : 'pointer', minHeight: 52, fontFamily: 'inherit' }}>
+              Export CSV
+            </button>
+          </div>
+        ) : (
+          <>
+            <button onClick={submit} disabled={disabled}
+              style={{ width: '100%', marginTop: 14, background: disabled ? '#e4e4e4' : ink, border: 'none', color: disabled ? '#9a9a9a' : '#fff', padding: '1rem', borderRadius: 6, fontSize: '0.95rem', fontWeight: 600, cursor: busy ? 'wait' : 'pointer', minHeight: 52, fontFamily: 'inherit' }}>
+              {busy ? 'Analyzing…' : res ? `Analyze another ${kind}` : `Detect AI ${kind}`}
+            </button>
+            <p style={{ color: inkFaint, fontSize: '0.75rem', textAlign: 'center', marginTop: '0.6rem' }}>
+              {kind === 'text' ? 'Nothing is stored — passages are analyzed transiently in memory.' : 'Files are decoded in server memory and discarded immediately. Never uploaded anywhere else.'}
+            </p>
+          </>
+        )}
 
         {err && <div role="alert" style={{ background: '#f5f5f5', border: `1px solid ${ink}`, borderLeftWidth: 3, borderRadius: 4, padding: '0.9rem 1.1rem', color: ink, fontSize: '0.87rem', marginTop: '0.75rem' }}>{err}</div>}
 
+        {/* Bulk results — same verdict-card shell as the single detectors */}
+        {kind === 'bulk' && bulkRes && (
+          <div style={{ border: `1px solid ${ink}`, borderRadius: 8, overflow: 'hidden', marginTop: '1.5rem', background: '#fff', animation: 'reveal 0.35s ease' }}>
+            <div style={{ padding: '1.75rem 1.5rem', borderBottom: `1px solid ${line}` }}>
+              <div style={{ fontSize: '0.72rem', fontWeight: 600, color: inkFaint, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '0.75rem' }}>Audit summary</div>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 14, flexWrap: 'wrap' }}>
+                <div style={{ fontSize: 'clamp(2.8rem,9vw,4.2rem)', fontWeight: 700, color: ink, lineHeight: 1, letterSpacing: '-0.03em', fontVariantNumeric: 'tabular-nums' }}>{bulkRes.count}</div>
+                <div style={{ fontSize: '0.95rem', color: inkSoft, maxWidth: 320, lineHeight: 1.5 }}>URLs audited · <strong style={{ color: ink }}>{bulkFlagged}</strong> flagged at ≥50% AI probability</div>
+              </div>
+              <div style={{ marginTop: '0.9rem', fontSize: '0.76rem', color: inkFaint }}>Each row runs the full nine-layer image pipeline and gets a permanent SHA-256 permalink.</div>
+            </div>
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem' }}>
+                <thead>
+                  <tr style={{ textAlign: 'left', color: inkFaint, background: surface }}>
+                    <th style={{ padding: '8px 14px', fontWeight: 600 }}>URL</th>
+                    <th style={{ padding: '8px 10px', fontWeight: 600 }}>Score</th>
+                    <th style={{ padding: '8px 10px', fontWeight: 600 }}>Verdict</th>
+                    <th style={{ padding: '8px 10px', fontWeight: 600 }}>Top signals</th>
+                    <th style={{ padding: '8px 10px', fontWeight: 600 }}>Permalink</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {bulkRes.rows.map((r, i) => (
+                    <tr key={i} style={{ borderTop: `1px solid ${line}` }}>
+                      <td style={{ padding: '8px 14px', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.url}>
+                        {r.error ? <span style={{ color: '#b45309' }}>{r.error}</span> : r.url}
+                      </td>
+                      <td style={{ padding: '8px 10px', fontWeight: 700, color: r.score >= 50 ? ink : inkSoft, fontVariantNumeric: 'tabular-nums' }}>{r.error ? '—' : `${r.score}%`}</td>
+                      <td style={{ padding: '8px 10px' }}>{vmark(r.verdict).mark} {r.verdict || '—'}</td>
+                      <td style={{ padding: '8px 10px', color: inkSoft }}>{(r.topSignals || []).join('; ') || '—'}</td>
+                      <td style={{ padding: '8px 10px' }}>{r.permalink ? <Link href={r.permalink} style={{ color: ink, textDecoration: 'underline', textUnderlineOffset: 2 }}>view</Link> : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ padding: '0.9rem 1.5rem', background: surface, fontSize: '0.78rem', color: inkSoft }}>
+              Runs are recorded in an append-only audit log on the server. Results contain no image bytes — only forensic measurements.
+            </div>
+          </div>
+        )}
+
         {/* Verdict card — same anatomy as the image results */}
+        {kind !== 'bulk' && (<>
         {res && res.score != null && (
           <div style={{ border: `1px solid ${ink}`, borderRadius: 8, overflow: 'hidden', marginTop: '1.5rem', background: '#fff', animation: 'reveal 0.35s ease' }}>
             <div style={{ padding: '1.75rem 1.5rem', borderBottom: `1px solid ${line}` }}>
@@ -275,7 +370,7 @@ export default function SiblingTool({ kind, api, title, intro, placeholder, acce
                 <span>Confidence: <strong style={{ color: ink, fontWeight: 600 }}>{res.confidence}</strong></span>
                 {res.layers?.models?.available && <span>Neural model attached ({res.layers.models.combined}%)</span>}
                 {!res.layers?.models?.available && <span>Heuristic layers only</span>}
-                {kind === 'audio' && res.stats && <span>{res.stats.durationSec}s · RMS {res.stats.rms} · HF ratio {res.stats.hfRatio}</span>}
+                {kind === 'audio' && res.layers?.waveform?.stats && <span>{res.layers.waveform.stats.durationSec}s · RMS {res.layers.waveform.stats.rms} · HF ratio {res.layers.waveform.stats.hfRatio}</span>}
                 {kind === 'text' && res.layers?.statistics?.features && <span>{res.layers.statistics.features.words} words · burstiness {res.layers.statistics.features.burstiness} · TTR {res.layers.statistics.features.typeTokenRatio}</span>}
               </div>
             </div>
@@ -373,16 +468,16 @@ export default function SiblingTool({ kind, api, title, intro, placeholder, acce
                       </div>
                     </div>
                   )}
-                  {kind === 'audio' && res.stats && (
+                  {kind === 'audio' && res.layers?.waveform?.stats && (
                     <div style={{ marginTop: '0.9rem', paddingTop: '0.9rem', borderTop: '1px solid #e8e8e8' }}>
                       <div style={{ fontSize: '0.8rem', color: ink, fontWeight: 600, marginBottom: 6 }}>PCM measurements</div>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: '4px 14px', fontSize: '0.76rem', color: inkSoft, fontVariantNumeric: 'tabular-nums' }}>
-                        <span>duration: <strong style={{ color: ink }}>{res.stats.durationSec}s</strong></span>
+                        <span>duration: <strong style={{ color: ink }}>{res.layers.waveform.stats.durationSec}s</strong></span>
                         <span>rms: <strong style={{ color: ink }}>{res.stats.rms}</strong></span>
-                        <span>peak: <strong style={{ color: ink }}>{res.stats.peak}</strong></span>
-                        <span>clipped: <strong style={{ color: ink }}>{(res.stats.clippedRatio * 100).toFixed(3)}%</strong></span>
-                        <span>near-zero samples: <strong style={{ color: ink }}>{(res.stats.nearZeroRatio * 100).toFixed(2)}%</strong></span>
-                        <span>zero-crossing rate: <strong style={{ color: ink }}>{res.stats.zeroCrossRate}</strong></span>
+                        <span>peak: <strong style={{ color: ink }}>{res.layers.waveform.stats.peak}</strong></span>
+                        <span>clipped: <strong style={{ color: ink }}>{(res.layers.waveform.stats.clippedRatio * 100).toFixed(3)}%</strong></span>
+                        <span>near-zero samples: <strong style={{ color: ink }}>{(res.layers.waveform.stats.nearZeroRatio * 100).toFixed(2)}%</strong></span>
+                        <span>zero-crossing rate: <strong style={{ color: ink }}>{res.layers.waveform.stats.zeroCrossRate}</strong></span>
                         <span>HF/LF energy ratio: <strong style={{ color: ink }}>{res.stats.hfRatio}</strong></span>
                       </div>
                     </div>
@@ -399,6 +494,7 @@ export default function SiblingTool({ kind, api, title, intro, placeholder, acce
           </div>
         )}
 
+        </>)}
         {/* Session history */}
         {history.length > 0 && (
           <section aria-label="Your recent analyses" style={{ marginTop: '2rem', borderTop: `1px solid ${line}`, paddingTop: '1.25rem' }}>
@@ -428,7 +524,6 @@ export default function SiblingTool({ kind, api, title, intro, placeholder, acce
           {kind !== 'text' && <Link href="/isitext" style={{ color: ink, textDecoration: 'underline', textUnderlineOffset: 3 }}>AI text detector</Link>}
           {kind !== 'audio' && <Link href="/isitaudio" style={{ color: ink, textDecoration: 'underline', textUnderlineOffset: 3 }}>AI audio detector</Link>}
           <Link href="/bulk-audit" style={{ color: ink, textDecoration: 'underline', textUnderlineOffset: 3 }}>Bulk audit</Link>
-          <Link href="/benchmark" style={{ color: ink, textDecoration: 'underline', textUnderlineOffset: 3 }}>Benchmark</Link>
         </section>
       </main>
 
