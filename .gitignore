@@ -1,6 +1,5 @@
-# Compiled and build artifacts
-__pycache__/
-*.pyc
+# Data files
+.isitai/.data/
 
-# Environment
-.env
+# Logs
+*.log
