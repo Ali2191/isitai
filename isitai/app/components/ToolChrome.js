@@ -20,33 +20,39 @@ const Logo = ({ size = 26 }) => (
 )
 
 export function ToolNav({ active }) {
+  const products = [
+    ['/', 'Images', 'images', 'Single-image forensic analysis with evidence and uncertainty bands.'],
+    ['/compare', 'Compare', 'compare', 'Compare an original and suspected edit region by region.'],
+    ['/isvideo', 'Video', 'video', 'Sample video and GIF frames for temporal inconsistencies.'],
+    ['/isitext', 'Text', 'text', 'Measure AI-associated writing-style signals, not authorship proof.'],
+    ['/isitaudio', 'Audio', 'audio', 'Inspect synthetic-audio signals and optional reference consistency.'],
+  ]
   const links = [
-    ['/', 'Images', 'images'],
-    ['/compare', 'Compare', 'compare'],
-    ['/isvideo', 'Video', 'video'],
-    ['/isitext', 'Text', 'text'],
-    ['/isitaudio', 'Audio', 'audio'],
     ['/bulk-audit', 'Bulk', 'bulk'],
     ['/provenance', 'Provenance', 'provenance'],
     ['/how-to-detect-ai-images', 'Guides', 'guides'],
   ]
   return (
-    <nav aria-label="Main navigation" style={{ position: 'sticky', top: 0, zIndex: 100, background: 'rgba(255,255,255,0.94)', backdropFilter: 'blur(8px)', borderBottom: `1px solid ${line}`, padding: '0 clamp(1rem,4vw,2rem)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: '58px' }}>
+    <nav className="tool-nav" aria-label="Main navigation">
+      <style>{`.tool-nav{position:sticky;top:0;z-index:100;background:rgba(255,255,255,.94);backdrop-filter:blur(8px);border-bottom:1px solid ${line};padding:0 clamp(1rem,4vw,2rem);display:flex;align-items:center;justify-content:space-between;min-height:58px}.tool-nav-links{display:flex;align-items:center;gap:4px;flex-wrap:wrap}.tool-nav-link,.tool-products-trigger{padding:6px 12px;text-decoration:none;font-size:.84rem;color:${inkSoft};background:none;border:1px solid transparent;border-radius:5px;font-family:inherit;cursor:pointer}.tool-nav-link[data-active=true],.tool-products-trigger[data-active=true]{color:${ink};background:${surface};border-color:${line};font-weight:600}.tool-products{position:relative}.tool-products-menu{position:absolute;right:0;top:calc(100% + 8px);width:300px;padding:8px;background:#fff;border:1px solid ${line};border-radius:8px;box-shadow:0 12px 30px rgba(0,0,0,.1);opacity:0;visibility:hidden;transform:translateY(-4px);transition:opacity .15s,transform .15s,visibility .15s}.tool-products:hover .tool-products-menu,.tool-products:focus-within .tool-products-menu{opacity:1;visibility:visible;transform:translateY(0)}.tool-product{display:block;padding:10px 11px;text-decoration:none;border-radius:5px}.tool-product:hover,.tool-product:focus{background:${surface};outline:none}.tool-product-name{display:block;color:${ink};font-size:.84rem;font-weight:600}.tool-product-description{display:block;color:${inkFaint};font-size:.73rem;line-height:1.4;margin-top:3px}.tool-api{margin-left:4px;border-color:${line}}@media(max-width:760px){.tool-nav{align-items:flex-start;padding-top:10px;padding-bottom:10px}.tool-nav-links{justify-content:flex-end;max-width:calc(100% - 85px)}.tool-nav-link,.tool-products-trigger{padding:5px 7px;font-size:.76rem}.tool-products-menu{position:fixed;top:58px;right:12px;width:min(300px,calc(100vw - 24px))}}`}</style>
       <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: 9, textDecoration: 'none' }}>
         <Logo size={26} />
         <span style={{ fontWeight: 700, fontSize: '1.05rem', color: ink, letterSpacing: '-0.01em' }}>IsItAI</span>
       </Link>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+      <div className="tool-nav-links">
+        <div className="tool-products">
+          <button className="tool-products-trigger" data-active={products.some(([, , id]) => active === id)} aria-haspopup="true">Products <span aria-hidden="true">⌄</span></button>
+          <div className="tool-products-menu">
+            {products.map(([href, label, id, description]) => <Link key={id} href={href} className="tool-product">
+              <span className="tool-product-name">{label}</span><span className="tool-product-description">{description}</span>
+            </Link>)}
+          </div>
+        </div>
         {links.map(([href, label, id]) => (
-          <Link key={id} href={href} style={{
-            padding: '6px 12px', textDecoration: 'none', fontSize: '0.84rem',
-            color: active === id ? ink : inkSoft,
-            background: active === id ? surface : 'none',
-            border: `1px solid ${active === id ? line : 'transparent'}`,
-            borderRadius: 5, fontWeight: active === id ? 600 : 400,
-          }}>{label}</Link>
+          <Link key={id} href={href} className="tool-nav-link" data-active={active === id}>{label}</Link>
         ))}
-        <Link href="/api-guide" style={{ marginLeft: 4, padding: '6px 12px', color: inkSoft, textDecoration: 'none', fontSize: '0.84rem', border: `1px solid ${line}`, borderRadius: 5 }}>API</Link>
+        <Link href="/api-guide" className="tool-nav-link tool-api">API</Link>
+        <a href="https://github.com/Ali2191/isitai" target="_blank" rel="noreferrer" className="tool-nav-link tool-api">GitHub</a>
       </div>
     </nav>
   )

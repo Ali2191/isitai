@@ -10,6 +10,7 @@
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import SignalChip from './SignalChip'
+import { ToolNav } from './ToolChrome'
 
 const ink = '#161616'
 const inkSoft = '#5c5c5c'
@@ -182,22 +183,7 @@ export default function SiblingTool({ kind, api, title, intro, placeholder, acce
 
   return (
     <div style={{ minHeight: '100vh', background: '#fff', color: ink, fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' }}>
-      {/* Navbar — identical to the image tool */}
-      <nav aria-label="Main navigation" style={{ position: 'sticky', top: 0, zIndex: 100, background: 'rgba(255,255,255,0.94)', backdropFilter: 'blur(8px)', borderBottom: `1px solid ${line}`, padding: '0 clamp(1rem,4vw,2rem)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: '58px' }}>
-        <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: 9, textDecoration: 'none' }}>
-          <Logo size={26} />
-          <span style={{ fontWeight: 700, fontSize: '1.05rem', color: ink, letterSpacing: '-0.01em' }}>IsItAI</span>
-        </Link>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
-          <Link href="/" style={{ padding: '6px 12px', color: inkSoft, textDecoration: 'none', fontSize: '0.84rem' }}>Images</Link>
-          <Link href="/isitext" style={{ padding: '6px 12px', color: kind === 'text' ? ink : inkSoft, background: kind === 'text' ? surface : 'none', border: `1px solid ${kind === 'text' ? line : 'transparent'}`, borderRadius: 5, textDecoration: 'none', fontSize: '0.84rem', fontWeight: kind === 'text' ? 600 : 400 }}>Text</Link>
-          <Link href="/isitaudio" style={{ padding: '6px 12px', color: kind === 'audio' ? ink : inkSoft, background: kind === 'audio' ? surface : 'none', border: `1px solid ${kind === 'audio' ? line : 'transparent'}`, borderRadius: 5, textDecoration: 'none', fontSize: '0.84rem', fontWeight: kind === 'audio' ? 600 : 400 }}>Audio</Link>
-          <Link href="/how-to-detect-ai-images" style={{ padding: '6px 12px', color: inkSoft, textDecoration: 'none', fontSize: '0.84rem' }}>Guides</Link>
-          <Link href="/provenance" style={{ padding: '6px 12px', color: inkSoft, textDecoration: 'none', fontSize: '0.84rem' }}>Provenance</Link>
-          <Link href="/bulk-audit" style={{ padding: '6px 12px', color: kind === 'bulk' ? ink : inkSoft, background: kind === 'bulk' ? surface : 'none', border: `1px solid ${kind === 'bulk' ? line : 'transparent'}`, borderRadius: 5, textDecoration: 'none', fontSize: '0.84rem', fontWeight: kind === 'bulk' ? 600 : 400 }}>Bulk</Link>
-          <Link href="/api-guide" style={{ marginLeft: 4, padding: '6px 12px', color: inkSoft, textDecoration: 'none', fontSize: '0.84rem', border: `1px solid ${line}`, borderRadius: 5 }}>API</Link>
-        </div>
-      </nav>
+      <ToolNav active={kind === 'text' ? 'text' : kind === 'audio' ? 'audio' : 'bulk'} />
 
       <main style={{ maxWidth: 860, margin: '0 auto', padding: 'clamp(2rem,5vw,3.5rem) clamp(1rem,4vw,2rem)' }}>
         <p style={{ fontSize: '0.8rem', fontWeight: 600, color: inkFaint, textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: '0.9rem' }}>
@@ -551,7 +537,6 @@ export default function SiblingTool({ kind, api, title, intro, placeholder, acce
     </div>
   )
 }
-
 // monochrome heat: 0 → white, 1 → near-black ink
 function heat(v) {
   const t = Math.max(0, Math.min(1, v))
@@ -610,11 +595,3 @@ function LayerBlock({ icon, title, layer }) {
     </div>
   )
 }
-
-const Logo = ({ size = 32 }) => (
-  <svg width={size} height={size} viewBox="0 0 32 32" fill="none" aria-hidden="true">
-    <rect width="32" height="32" rx="6" fill="#161616" />
-    <circle cx="14.5" cy="14.5" r="6" fill="none" stroke="white" strokeWidth="2" />
-    <line x1="19" y1="19" x2="24" y2="24" stroke="white" strokeWidth="2.4" strokeLinecap="round" />
-  </svg>
-)

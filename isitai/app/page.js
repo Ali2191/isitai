@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from 'react'
 import Link from 'next/link'
 import HeatmapOverlay from './components/HeatmapOverlay'
+import { ToolNav } from './components/ToolChrome'
 
 // ─── Plain monochrome palette. Color is reserved for nothing; hierarchy comes
 //     from weight, size and hairline rules. ────────────────────────────────────
@@ -51,7 +52,6 @@ export default function Home() {
   const [error, setError] = useState(null)
   const [isDragging, setIsDragging] = useState(false)
   const [showDetails, setShowDetails] = useState(false)
-  const [menuOpen, setMenuOpen] = useState(false)
   const [displayScore, setDisplayScore] = useState(0)
   const [activeHow, setActiveHow] = useState(0)
   const [loadingStep, setLoadingStep] = useState(0)
@@ -123,7 +123,7 @@ export default function Home() {
   const loadingSteps = ['Preparing image', 'Running models + forensics', 'Fusing signals']
 
   const navigate = p => {
-    setPage(p); setMenuOpen(false); setShowDetails(false); setShareUrl(null); setFeedbackSent(null)
+    setPage(p); setShowDetails(false); setShareUrl(null); setFeedbackSent(null)
     if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'instant' })
   }
 
@@ -344,43 +344,7 @@ export default function Home() {
       {/* Skip link for keyboard users */}
       <a href="#main" style={{ position: 'absolute', left: '-9999px', top: 0, background: ink, color: '#fff', padding: '8px 16px', zIndex: 200, borderRadius: '0 0 4px 0' }} onFocus={e => e.currentTarget.style.left = '0'} onBlur={e => e.currentTarget.style.left = '-9999px'}>Skip to content</a>
 
-      {/* Navbar */}
-      <nav aria-label="Main navigation" style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 100, background: 'rgba(255,255,255,0.94)', backdropFilter: 'blur(8px)', borderBottom: `1px solid ${border}`, padding: '0 clamp(1rem,4vw,2rem)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: '58px' }}>
-        <button onClick={() => navigate('home')} aria-label="IsItAI home" style={{ display: 'flex', alignItems: 'center', gap: '9px', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
-          <Logo size={26} />
-          <span style={{ fontWeight: 700, fontSize: '1.05rem', color: ink, letterSpacing: '-0.01em' }}>IsItAI</span>
-        </button>
-        <div className="desk-nav" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-          {[['home', 'Home'], ['how', 'How it works'], ['detect', 'Try free']].map(([id, label]) => (
-            <button key={id} onClick={() => navigate(id)} aria-current={page === id ? 'page' : undefined} style={{ background: page === id ? surface : 'none', border: `1px solid ${page === id ? border : 'transparent'}`, borderRadius: '5px', padding: '6px 13px', color: page === id ? ink : textSoft, cursor: 'pointer', fontSize: '0.86rem', fontWeight: page === id ? 600 : 400, transition: 'color 0.15s', fontFamily: 'inherit' }}>
-              {label}
-            </button>
-          ))}
-          <Link href="/isitext" style={{ padding: '6px 12px', color: textSoft, textDecoration: 'none', fontSize: '0.84rem' }}>Text</Link>
-          <Link href="/isitaudio" style={{ padding: '6px 12px', color: textSoft, textDecoration: 'none', fontSize: '0.84rem' }}>Audio</Link>
-          <Link href="/compare" style={{ padding: '6px 12px', color: textSoft, textDecoration: 'none', fontSize: '0.84rem' }}>Compare</Link>
-          <Link href="/isvideo" style={{ padding: '6px 12px', color: textSoft, textDecoration: 'none', fontSize: '0.84rem' }}>Video</Link>
-          <Link href="/api-guide" style={{ marginLeft: '4px', padding: '6px 12px', color: textSoft, textDecoration: 'none', fontSize: '0.84rem', border: `1px solid ${border}`, borderRadius: '5px' }}>API</Link>
-          <a href="https://github.com/Ali2191/isitai" target="_blank" rel="noreferrer" style={{ marginLeft: '4px', padding: '6px 12px', color: textSoft, textDecoration: 'none', fontSize: '0.84rem', border: `1px solid ${border}`, borderRadius: '5px' }}>
-            GitHub
-          </a>
-        </div>
-        <button className="mob-menu" aria-label="Toggle menu" aria-expanded={menuOpen} onClick={() => setMenuOpen(!menuOpen)} style={{ display: 'none', background: 'none', border: `1px solid ${border}`, borderRadius: '5px', padding: '8px 11px', color: ink, fontSize: '1.1rem', cursor: 'pointer', lineHeight: 1 }}>≡</button>
-      </nav>
-
-      {/* Mobile menu */}
-      {menuOpen && (
-        <div style={{ position: 'fixed', top: '58px', left: 0, right: 0, zIndex: 99, background: '#ffffff', borderBottom: `1px solid ${border}`, padding: '0.5rem 1.5rem 1rem' }}>
-          {[['home', 'Home'], ['how', 'How it works'], ['detect', 'Try free']].map(([id, label]) => (
-            <button key={id} onClick={() => navigate(id)} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', padding: '0.8rem 0', color: page === id ? ink : textSoft, cursor: 'pointer', fontSize: '1rem', fontWeight: page === id ? 600 : 400, borderBottom: `1px solid ${border}`, fontFamily: 'inherit' }}>{label}</button>
-          ))}
-          <Link href="/isitext" onClick={() => setMenuOpen(false)} style={{ display: 'block', padding: '0.8rem 0', color: ink, textDecoration: 'none', fontSize: '1rem', borderBottom: `1px solid ${border}` }}>AI text detector</Link>
-          <Link href="/isitaudio" onClick={() => setMenuOpen(false)} style={{ display: 'block', padding: '0.8rem 0', color: ink, textDecoration: 'none', fontSize: '1rem', borderBottom: `1px solid ${border}` }}>AI audio detector</Link>
-          <Link href="/compare" onClick={() => setMenuOpen(false)} style={{ display: 'block', padding: '0.8rem 0', color: ink, textDecoration: 'none', fontSize: '1rem', borderBottom: `1px solid ${border}` }}>Compare images</Link>
-          <Link href="/isvideo" onClick={() => setMenuOpen(false)} style={{ display: 'block', padding: '0.8rem 0', color: ink, textDecoration: 'none', fontSize: '1rem', borderBottom: `1px solid ${border}` }}>Video forensics</Link>
-          <Link href="/api-guide" onClick={() => setMenuOpen(false)} style={{ display: 'block', padding: '0.8rem 0', color: ink, textDecoration: 'none', fontSize: '1rem', borderBottom: `1px solid ${border}` }}>API guide</Link>
-        </div>
-      )}
+      <ToolNav active="images" />
 
       <main id="main" style={{ paddingTop: '58px' }}>
         {/* Home */}
