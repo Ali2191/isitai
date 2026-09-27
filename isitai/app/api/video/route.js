@@ -50,7 +50,7 @@ export async function GET() {
     name: 'IsItAI Video Detection API',
     usage: { endpoint: 'POST /api/video', upload: 'multipart/form-data field "video"', urlMode: 'JSON { "url": "https://…/clip.mp4" }' },
     pipeline: '8–16 keyframe sampling (ffmpeg or GIF decoder) → per-frame noise/temporal forensics → aggregate score + per-frame table',
-    limits: { anonymous: '4/min per IP', maxBytes: MAX_VIDEO_BYTES },
+    limits: { anonymous: '4/min per IP', maxBytes: MAX_VIDEO_BYTES, hostedGatewayNote: 'Some serverless gateways reject multipart requests above 4 MB before this route runs.' },
     privacy: 'Videos are analyzed transiently and never stored.',
   })
 }
