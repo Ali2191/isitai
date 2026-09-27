@@ -1,8 +1,8 @@
 import SiblingTool from '../components/SiblingTool'
 
 export const metadata = {
-  title: 'Is It AI Text? — Free AI text detector (ChatGPT/Claude/Gemini)',
-  description: 'Detect AI-generated text instantly: stylometric burstiness, perplexity proxies, LLM cliché fingerprints and optional model ensemble. No signup.',
+  title: 'Writing Authorship Signals — IsItAI',
+  description: 'Analyze writing for AI-associated stylometric signals, burstiness, language fingerprints, and uncertainty. Results are not proof of authorship.',
   alternates: { canonical: '/isitext' },
 }
 
@@ -11,8 +11,8 @@ export default function IsItTextPage() {
     <SiblingTool
       kind="text"
       api="/api/text"
-      title="Is It AI Text?"
-      intro="Paste any passage. We measure burstiness (humans vary sentence length wildly — LLMs don't), type-token ratio, punctuation habits and a growing fingerprint list of LLM clichés, then optionally consult open classifier models."
+      title="Writing authorship signals"
+      intro="Paste a passage to measure burstiness, vocabulary variation, punctuation habits and AI-associated language fingerprints. The result is a writing-style signal, not proof of who authored the text."
       placeholder="Paste the text you want to check (50+ characters)…"
       acceptHint="Works best on paragraphs longer than ~50 words. Translated or heavily edited text is harder for everyone."
     />

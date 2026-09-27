@@ -22,6 +22,8 @@ const Logo = ({ size = 26 }) => (
 export function ToolNav({ active }) {
   const links = [
     ['/', 'Images', 'images'],
+    ['/compare', 'Compare', 'compare'],
+    ['/isvideo', 'Video', 'video'],
     ['/isitext', 'Text', 'text'],
     ['/isitaudio', 'Audio', 'audio'],
     ['/bulk-audit', 'Bulk', 'bulk'],

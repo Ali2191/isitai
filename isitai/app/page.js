@@ -106,6 +106,15 @@ export default function Home() {
 
   useEffect(() => { setHistory(loadHistory()) }, [])
 
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const incoming = params.get('url')
+    if (!incoming) return
+    setMode('url')
+    setUrlInput(incoming)
+    if (params.get('auto') === '1') window.setTimeout(() => document.querySelector('[data-auto-detect]')?.click(), 0)
+  }, [])
+
   const bg = '#ffffff'
   const border = line
   const textPrimary = ink
@@ -709,7 +718,7 @@ export default function Home() {
                 {isLoading ? `Analyzing ${batchIndex + 1}/${batchFiles.length}…` : `Analyze ${batchFiles.length || ''} image${batchFiles.length === 1 ? '' : 's'}`}
               </button>
             ) : mode === 'url' ? (
-              <button onClick={handleDetect} disabled={isLoading}
+              <button data-auto-detect onClick={handleDetect} disabled={isLoading}
                 style={{ width: '100%', background: isLoading ? '#e4e4e4' : ink, border: 'none', color: isLoading ? '#9a9a9a' : '#fff', padding: '1rem', borderRadius: '6px', fontSize: '0.95rem', fontWeight: 600, cursor: isLoading ? 'wait' : 'pointer', minHeight: '52px', fontFamily: 'inherit' }}>
                 {isLoading ? 'Fetching & analyzing…' : result ? 'Analyze another URL' : 'Detect this URL'}
               </button>

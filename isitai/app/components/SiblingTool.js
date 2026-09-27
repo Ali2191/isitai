@@ -53,6 +53,7 @@ export default function SiblingTool({ kind, api, title, intro, placeholder, acce
   const [bulkRes, setBulkRes] = useState(null)
   const [file, setFile] = useState(null)
   const [fileName, setFileName] = useState('')
+  const [referenceFile, setReferenceFile] = useState(null)
   const [dragOver, setDragOver] = useState(false)
   const [showDetails, setShowDetails] = useState(false)
   const [displayScore, setDisplayScore] = useState(0)
@@ -109,6 +110,7 @@ export default function SiblingTool({ kind, api, title, intro, placeholder, acce
       } else {
         if (!file) throw new Error('Choose an audio file first')
         const fd = new FormData(); fd.append('audio', file)
+        if (referenceFile) fd.append('reference', referenceFile)
         r = await fetch(api, { method: 'POST', body: fd })
       }
       const ct = r.headers.get('content-type') || ''
@@ -273,6 +275,13 @@ export default function SiblingTool({ kind, api, title, intro, placeholder, acce
           </div>
         )}
 
+        {kind === 'audio' && (
+          <label style={{ display: 'block', marginTop: 12, border: `1px solid ${line}`, borderRadius: 8, padding: '0.8rem 1rem', color: inkSoft, fontSize: '0.82rem', cursor: 'pointer' }}>
+            <input type="file" accept="audio/*,.mp3,.wav,.ogg,.m4a,.flac,.aac" hidden onChange={e => setReferenceFile(e.target.files?.[0] || null)} />
+            {referenceFile ? `Reference recording: ${referenceFile.name}` : 'Optional reference recording for spectral voice consistency'}
+          </label>
+        )}
+
         {kind === 'bulk' ? (
           <div style={{ display: 'flex', gap: 10, marginTop: 14, flexWrap: 'wrap' }}>
             <button onClick={submit} disabled={disabled}
@@ -349,7 +358,7 @@ export default function SiblingTool({ kind, api, title, intro, placeholder, acce
               <div style={{ fontSize: '0.72rem', fontWeight: 600, color: inkFaint, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '0.75rem' }}>Verdict {vs?.mark} {vs?.note}</div>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 14, flexWrap: 'wrap' }}>
                 <div style={{ fontSize: 'clamp(2.8rem,9vw,4.2rem)', fontWeight: 700, color: ink, lineHeight: 1, letterSpacing: '-0.03em', fontVariantNumeric: 'tabular-nums' }} aria-label={`AI probability ${res.score} percent`}>{displayScore}%</div>
-                <div style={{ fontSize: '0.95rem', color: inkSoft, maxWidth: 280, lineHeight: 1.5 }}>chance this {kind} is AI-generated</div>
+                <div style={{ fontSize: '0.95rem', color: inkSoft, maxWidth: 280, lineHeight: 1.5 }}>{kind === 'text' ? 'strength of AI-associated authorship signals' : kind === 'audio' ? 'strength of synthetic-audio signals' : `chance this ${kind} is AI-generated`}</div>
               </div>
               <div style={{ marginTop: '0.9rem', fontSize: '0.8rem', color: inkFaint }}>
                 {copy?.line1} · uncertainty band <strong style={{ color: inkSoft, fontWeight: 600 }}>{res.band?.label}</strong>
@@ -370,6 +379,7 @@ export default function SiblingTool({ kind, api, title, intro, placeholder, acce
                 {res.layers?.models?.available && <span>Neural model attached ({res.layers.models.combined}%)</span>}
                 {!res.layers?.models?.available && <span>Heuristic layers only</span>}
                 {kind === 'audio' && res.layers?.waveform?.stats && <span>{res.layers.waveform.stats.durationSec}s · RMS {res.layers.waveform.stats.rms} · HF ratio {res.layers.waveform.stats.hfRatio}</span>}
+                {kind === 'audio' && res.voiceConsistency && <span>Reference: {res.voiceConsistency.label.toLowerCase()}</span>}
                 {kind === 'text' && res.layers?.statistics?.features && <span>{res.layers.statistics.features.words} words · burstiness {res.layers.statistics.features.burstiness} · TTR {res.layers.statistics.features.typeTokenRatio}</span>}
               </div>
             </div>
@@ -402,6 +412,12 @@ export default function SiblingTool({ kind, api, title, intro, placeholder, acce
               <div style={{ padding: '1.25rem 1.5rem', borderBottom: `1px solid ${line}` }}>
                 <div style={{ fontSize: '0.7rem', fontWeight: 600, color: inkFaint, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '0.7rem' }}>Waveform &amp; temporal suspicion strip</div>
                 <Waveform result={res} />
+              </div>
+            )}
+            {kind === 'audio' && res.voiceConsistency && (
+              <div style={{ padding: '1.25rem 1.5rem', borderBottom: `1px solid ${line}` }}>
+                <div style={{ fontSize: '0.7rem', fontWeight: 600, color: inkFaint, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '0.7rem' }}>Reference recording comparison</div>
+                <p style={{ margin: 0, color: inkSoft, fontSize: '0.85rem', lineHeight: 1.6 }}>{res.voiceConsistency.label} · distance {res.voiceConsistency.distance}. {res.voiceConsistency.evidence}</p>
               </div>
             )}
 

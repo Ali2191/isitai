@@ -48,6 +48,9 @@ export default function ApiGuide() {
       <H2>Related endpoints</H2>
       <UL items={[
         'GET /api/detect?id=… — fetch a cached result by id (results only, never images).',
+        'POST /api/compare — multipart original + suspected images; returns changed-region tiles, metadata deltas, and compression differences.',
+        'POST /api/video — multipart video; samples keyframes and reports temporal consistency and frame-level evidence.',
+        'POST /api/audio — multipart audio with optional reference field for bounded spectral voice consistency evidence.',
         'POST /api/report — create a shareable 7-day report (link: /r/<id>); accepts the same inputs.',
         'POST /api/feedback — send { score, verdict, judgement } to calibrate accuracy.',
         'GET /api/stats — aggregate usage counters (no per-user data).',

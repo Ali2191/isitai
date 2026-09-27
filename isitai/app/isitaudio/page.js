@@ -1,8 +1,8 @@
 import SiblingTool from '../components/SiblingTool'
 
 export const metadata = {
-  title: 'Is It AI Audio? — Free TTS / AI music detector',
-  description: 'Upload audio (MP3/WAV/OGG/M4A) to detect AI voice cloning, TTS and generated music via spectral artifact analysis. Processed in memory, never stored.',
+  title: 'Synthetic Audio Signals — IsItAI',
+  description: 'Analyze audio for synthetic voice, TTS, and generated-music signals through spectral and waveform evidence. Results are probabilistic, not speaker identity proof.',
   alternates: { canonical: '/isitaudio' },
 }
 
@@ -11,8 +11,8 @@ export default function IsItAudioPage() {
     <SiblingTool
       kind="audio"
       api="/api/audio"
-      title="Is It AI Audio?"
-      intro="Neural voices (ElevenLabs, OpenVoice, Suno, Udio) leave consistent tells: over-clean high-frequency rolloff, unnatural silence floors and periodic vocoder artifacts. We decode the waveform and measure them directly."
+      title="Synthetic audio signals"
+      intro="Measure spectral rolloff, silence floors, waveform dynamics, and optional reference-track consistency. These are probabilistic audio signals, not proof of speaker identity or authorship."
       acceptHint="MP3, WAV, OGG, M4A up to 25 MB. Analyzed transiently — nothing is uploaded anywhere else."
     />
   )

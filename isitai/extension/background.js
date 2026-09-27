@@ -20,7 +20,7 @@ chrome.runtime.onInstalled.addListener(() => {
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   const url = info.srcUrl || info.linkUrl
   const target = url
-    ? `${SITE}/?url=${encodeURIComponent(url)}&auto=1`
+    ? `${SITE}/?url=${encodeURIComponent(url)}&auto=1&source=extension`
     : SITE
   chrome.tabs.create({ url: target, active: true })
 })
