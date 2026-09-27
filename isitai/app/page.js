@@ -358,6 +358,8 @@ export default function Home() {
           ))}
           <Link href="/isitext" style={{ padding: '6px 12px', color: textSoft, textDecoration: 'none', fontSize: '0.84rem' }}>Text</Link>
           <Link href="/isitaudio" style={{ padding: '6px 12px', color: textSoft, textDecoration: 'none', fontSize: '0.84rem' }}>Audio</Link>
+          <Link href="/compare" style={{ padding: '6px 12px', color: textSoft, textDecoration: 'none', fontSize: '0.84rem' }}>Compare</Link>
+          <Link href="/isvideo" style={{ padding: '6px 12px', color: textSoft, textDecoration: 'none', fontSize: '0.84rem' }}>Video</Link>
           <Link href="/api-guide" style={{ marginLeft: '4px', padding: '6px 12px', color: textSoft, textDecoration: 'none', fontSize: '0.84rem', border: `1px solid ${border}`, borderRadius: '5px' }}>API</Link>
           <a href="https://github.com/Ali2191/isitai" target="_blank" rel="noreferrer" style={{ marginLeft: '4px', padding: '6px 12px', color: textSoft, textDecoration: 'none', fontSize: '0.84rem', border: `1px solid ${border}`, borderRadius: '5px' }}>
             GitHub
@@ -374,6 +376,8 @@ export default function Home() {
           ))}
           <Link href="/isitext" onClick={() => setMenuOpen(false)} style={{ display: 'block', padding: '0.8rem 0', color: ink, textDecoration: 'none', fontSize: '1rem', borderBottom: `1px solid ${border}` }}>AI text detector</Link>
           <Link href="/isitaudio" onClick={() => setMenuOpen(false)} style={{ display: 'block', padding: '0.8rem 0', color: ink, textDecoration: 'none', fontSize: '1rem', borderBottom: `1px solid ${border}` }}>AI audio detector</Link>
+          <Link href="/compare" onClick={() => setMenuOpen(false)} style={{ display: 'block', padding: '0.8rem 0', color: ink, textDecoration: 'none', fontSize: '1rem', borderBottom: `1px solid ${border}` }}>Compare images</Link>
+          <Link href="/isvideo" onClick={() => setMenuOpen(false)} style={{ display: 'block', padding: '0.8rem 0', color: ink, textDecoration: 'none', fontSize: '1rem', borderBottom: `1px solid ${border}` }}>Video forensics</Link>
           <Link href="/api-guide" onClick={() => setMenuOpen(false)} style={{ display: 'block', padding: '0.8rem 0', color: ink, textDecoration: 'none', fontSize: '1rem', borderBottom: `1px solid ${border}` }}>API guide</Link>
         </div>
       )}
