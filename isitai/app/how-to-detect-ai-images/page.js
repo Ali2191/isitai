@@ -9,7 +9,7 @@ export const metadata = seo({
 export default function HowToDetect() {
   return (
     <ContentShell breadcrumb="How to detect AI-generated images">
-      <div style={{ display: 'inline-block', background: 'rgba(124,58,237,0.1)', border: '1px solid rgba(124,58,237,0.25)', borderRadius: '20px', padding: '4px 14px', fontSize: '0.78rem', color: '#a78bfa', marginBottom: '1rem' }}>Field guide · Updated 2026</div>
+      <p style={{ fontSize: '0.8rem', fontWeight: 600, color: '#8a8a8a', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: '0.9rem' }}>Field guide · Updated 2026</p>
       <h1 style={{ fontSize: 'clamp(1.8rem,5vw,2.6rem)', fontWeight: 900, letterSpacing: '-0.03em', margin: '0 0 1rem', lineHeight: 1.15 }}>How to Detect AI-Generated Images</h1>
       <P>Modern generators — Midjourney v7, DALL·E, Flux, Imagen, GPT-image — produce images that are visually indistinguishable from photographs. But they leak evidence in places human eyes never look: file headers, metadata blocks, frequency spectra, and watermark channels. This guide covers every reliable technique, from a 30-second manual check to automated multi-layer forensics.</P>
 

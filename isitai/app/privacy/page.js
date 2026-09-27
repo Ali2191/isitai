@@ -1,18 +1,15 @@
 'use client'
-import Link from 'next/link'
+import { ToolNav, ToolFooter } from '../components/ToolChrome'
 
 export default function Privacy() {
   return (
-    <div style={{ minHeight: '100vh', background: '#f8fafc', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }}>
-      <nav style={{ borderBottom: '1px solid rgba(0,0,0,0.08)', padding: '0 2rem', height: '64px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'rgba(255,255,255,0.9)', backdropFilter: 'blur(20px)', position: 'sticky', top: 0, zIndex: 100 }}>
-        <Link href="/" style={{ fontWeight: 900, fontSize: '1.2rem', background: 'linear-gradient(135deg, #6366f1, #ec4899)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', textDecoration: 'none' }}>IsItAI</Link>
-        <Link href="/" style={{ fontSize: '0.88rem', color: '#6366f1', textDecoration: 'none', fontWeight: 500 }}>← Back to app</Link>
-      </nav>
-      <div style={{ maxWidth: '720px', margin: '0 auto', padding: '4rem 1.5rem' }}>
+    <div style={{ minHeight: '100vh', background: '#fff', color: '#161616', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' }}>
+      <ToolNav />
+      <main style={{ maxWidth: '760px', margin: '0 auto', padding: 'clamp(2rem,5vw,4rem) clamp(1rem,4vw,1.5rem)' }}>
         <div style={{ marginBottom: '3rem' }}>
-          <div style={{ display: 'inline-block', background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(99,102,241,0.2)', borderRadius: '20px', padding: '4px 14px', fontSize: '0.8rem', color: '#6366f1', marginBottom: '1rem', fontWeight: 500 }}>Legal</div>
-          <h1 style={{ fontSize: '2.5rem', fontWeight: 900, margin: '0 0 0.5rem', letterSpacing: '-0.02em', color: '#0f172a' }}>Privacy Policy</h1>
-          <p style={{ color: '#94a3b8', margin: 0 }}>Last updated: March 2025</p>
+          <p style={{ fontSize: '0.8rem', fontWeight: 600, color: '#8a8a8a', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: '0.9rem' }}>Legal</p>
+          <h1 style={{ fontSize: 'clamp(1.7rem,4.5vw,2.6rem)', fontWeight: 700, margin: '0 0 0.5rem', letterSpacing: '-0.02em' }}>Privacy Policy</h1>
+          <p style={{ color: '#8a8a8a', margin: 0 }}>Last updated: March 2025</p>
         </div>
 
         {[
@@ -28,11 +25,12 @@ export default function Privacy() {
           { title: 'Contact', content: 'Questions about this policy? Email us at ' + (process.env.PRIVACY_EMAIL || 'privacy@isitai.app') + '. We are committed to being transparent and responsive about how we handle your data.' },
         ].map((section, i) => (
           <div key={i} style={{ marginBottom: '2.5rem', paddingBottom: '2.5rem', borderBottom: i < 9 ? '1px solid rgba(0,0,0,0.06)' : 'none' }}>
-            <h2 style={{ fontSize: '1.1rem', fontWeight: 700, margin: '0 0 0.75rem', color: '#0f172a' }}>{section.title}</h2>
-            <p style={{ color: '#475569', lineHeight: 1.8, margin: 0, fontSize: '0.95rem' }}>{section.content}</p>
+            <h2 style={{ fontSize: '1.1rem', fontWeight: 700, margin: '0 0 0.75rem' }}>{section.title}</h2>
+            <p style={{ color: '#5c5c5c', lineHeight: 1.8, margin: 0, fontSize: '0.95rem' }}>{section.content}</p>
           </div>
         ))}
-      </div>
+      </main>
+      <ToolFooter />
     </div>
   )
 }

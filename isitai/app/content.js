@@ -1,5 +1,6 @@
 // Shared shell + helpers for SEO content pages (server components)
 import Link from 'next/link'
+import { ToolNav, ToolFooter } from './components/ToolChrome'
 
 export const SITE = 'https://isitai-gilt.vercel.app'
 
@@ -23,10 +24,7 @@ const textSoft = '#5c5c5c'
 export function ContentShell({ children, breadcrumb }) {
   return (
     <div style={{ minHeight: '100vh', background: '#ffffff', color: textPrimary, fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' }}>
-      <nav aria-label="Main navigation" style={{ position: 'sticky', top: 0, zIndex: 100, background: 'rgba(255,255,255,0.94)', backdropFilter: 'blur(8px)', borderBottom: `1px solid ${border}`, padding: '0 clamp(1rem,4vw,2rem)', height: '58px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <Link href="/" style={{ fontWeight: 700, fontSize: '1.05rem', color: ink, textDecoration: 'none', letterSpacing: '-0.01em' }}>IsItAI</Link>
-        <Link href="/" style={{ color: ink, textDecoration: 'none', fontSize: '0.85rem', fontWeight: 600, borderBottom: '1px solid #c9c9c9', paddingBottom: '2px' }}>Try the free detector →</Link>
-      </nav>
+      <ToolNav active="guides" />
       <main style={{ maxWidth: 760, margin: '0 auto', padding: 'clamp(2rem,5vw,4rem) clamp(1rem,4vw,1.5rem)' }}>
         {breadcrumb && (
           <p style={{ fontSize: '0.78rem', color: textMuted, marginBottom: '1.5rem' }}>
@@ -39,9 +37,7 @@ export function ContentShell({ children, breadcrumb }) {
           <Link href="/" style={{ display: 'inline-block', background: ink, color: '#fff', padding: '10px 24px', borderRadius: '6px', textDecoration: 'none', fontWeight: 600 }}>Run a free detection — no account needed</Link>
         </div>
       </main>
-      <footer style={{ borderTop: `1px solid ${border}`, padding: '1.5rem clamp(1rem,4vw,2rem)', textAlign: 'center' }}>
-        <p style={{ color: textMuted, fontSize: '0.78rem', margin: 0 }}>© 2026 IsItAI · <Link href="/privacy" style={{ color: textMuted }}>Privacy</Link> · <Link href="/terms" style={{ color: textMuted }}>Terms</Link></p>
-      </footer>
+      <ToolFooter />
     </div>
   )
 }

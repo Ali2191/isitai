@@ -1,12 +1,21 @@
 'use client'
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import { ToolNav, ToolFooter } from '../../components/ToolChrome'
 
 export default function ReportPage({ params }) {
   const [data, setData] = useState(null)
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(true)
-  const resolved = typeof params === 'object' && params !== null ? (params.id ?? null) : params
+  const [resolved, setResolved] = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+    Promise.resolve(params).then(value => {
+      if (!cancelled) setResolved(typeof value === 'object' && value !== null ? value.id ?? null : value)
+    })
+    return () => { cancelled = true }
+  }, [params])
 
   useEffect(() => {
     if (!resolved) return
@@ -22,15 +31,14 @@ export default function ReportPage({ params }) {
     return () => { cancelled = true }
   }, [resolved])
 
-  const bg = '#0a0a0a', text = '#f4f4f5', muted = '#a1a1aa', border = 'rgba(255,255,255,0.1)'
+  const bg = '#fff', text = '#161616', muted = '#8a8a8a', border = '#e3e3e3'
 
   return (
-    <main style={{ minHeight: '100vh', background: bg, color: text, fontFamily: 'system-ui, sans-serif', padding: '32px 16px' }}>
+    <div style={{ minHeight: '100vh', background: bg, color: text, fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' }}>
+      <ToolNav />
+      <main style={{ maxWidth: 860, margin: '0 auto', padding: 'clamp(2rem,5vw,3.5rem) clamp(1rem,4vw,2rem)' }}>
       <div style={{ maxWidth: 720, margin: '0 auto' }}>
-        <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 32 }}>
-          <Link href="/" style={{ color: '#7c3aed', textDecoration: 'none', fontWeight: 700, fontSize: 18 }}>🔍 IsItAI</Link>
-          <span style={{ color: muted, fontSize: 13 }}>Shareable forensic report</span>
-        </header>
+        <p style={{ fontSize: '0.8rem', fontWeight: 600, color: muted, textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: '0.9rem' }}>Shareable forensic report</p>
 
         {loading && <p style={{ color: muted }}>Loading report…</p>}
         {error && (
@@ -39,7 +47,7 @@ export default function ReportPage({ params }) {
             <h1 style={{ fontSize: 22, margin: '8px 0' }}>Report not found</h1>
             <p style={{ color: muted }}>{error}</p>
             <p style={{ color: muted, fontSize: 13 }}>Reports expire after 7 days to protect privacy.</p>
-            <Link href="/" style={{ display: 'inline-block', marginTop: 16, background: '#7c3aed', color: 'white', padding: '10px 20px', borderRadius: 10, textDecoration: 'none', fontWeight: 600 }}>Run your own analysis</Link>
+            <Link href="/" style={{ display: 'inline-block', marginTop: 16, background: '#161616', color: 'white', padding: '10px 20px', borderRadius: 6, textDecoration: 'none', fontWeight: 600 }}>Run your own analysis</Link>
           </section>
         )}
 
@@ -99,7 +107,7 @@ export default function ReportPage({ params }) {
             )}
 
             {[['Metadata & provenance', data.layers?.metadata], ['Dimensions', data.layers?.dimensions], ['File structure', data.layers?.structure], ['Pixel forensics', data.layers?.pixels], ['Sensor noise (PRNU) & compression', data.layers?.noise], ['Anatomy checks', data.layers?.anatomy]].map(([title, layer]) => (
-              <section key={title} style={{ border: `1px solid ${border}`, borderRadius: 16, padding: 24, marginBottom: 16 }}>
+              <section key={title} style={{ border: `1px solid ${border}`, borderRadius: 8, padding: 24, marginBottom: 16 }}>
                 <h2 style={{ fontSize: 16, marginTop: 0 }}>{title} <span style={{ color: muted, fontWeight: 400, fontSize: 13 }}>· score {layer?.score ?? '—'}</span></h2>
                 <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
                   {(layer?.signals || []).slice(0, 10).map((s, i) => (
@@ -114,11 +122,13 @@ export default function ReportPage({ params }) {
 
             <p style={{ color: muted, fontSize: 12.5, textAlign: 'center' }}>{data.privacy}</p>
             <div style={{ textAlign: 'center', marginTop: 16 }}>
-              <Link href="/" style={{ background: '#7c3aed', color: 'white', padding: '10px 20px', borderRadius: 10, textDecoration: 'none', fontWeight: 600 }}>Check an image yourself →</Link>
+              <Link href="/" style={{ background: '#161616', color: 'white', padding: '10px 20px', borderRadius: 6, textDecoration: 'none', fontWeight: 600 }}>Check an image yourself →</Link>
             </div>
           </>
         )}
       </div>
-    </main>
+      </main>
+      <ToolFooter />
+    </div>
   )
 }

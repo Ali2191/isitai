@@ -6,23 +6,23 @@ export const metadata = seo({
   path: '/api-guide',
 })
 
-const code = { background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '10px', padding: '14px 16px', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: '0.8rem', color: '#d4d4d8', overflowX: 'auto', lineHeight: 1.6, whiteSpace: 'pre', display: 'block', marginBottom: '1rem' }
+const code = { background: '#fafafa', border: '1px solid #e3e3e3', borderRadius: '8px', padding: '14px 16px', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: '0.8rem', color: '#161616', overflowX: 'auto', lineHeight: 1.6, whiteSpace: 'pre', display: 'block', marginBottom: '1rem' }
 
 export default function ApiGuide() {
   return (
     <ContentShell breadcrumb="API guide">
       <h1 style={{ fontSize: 'clamp(1.8rem,5vw,2.6rem)', fontWeight: 900, letterSpacing: '-0.03em', margin: '0 0 1rem', lineHeight: 1.15 }}>IsItAI Public API</h1>
-      <P>One endpoint, JSON in / JSON out. No account required; set an <code style={{ color: '#a78bfa' }}>ISITAI_API_KEY</code> server-side to raise rate limits for trusted callers.</P>
+      <P>One endpoint, JSON in / JSON out. No account required; set an <code style={{ color: '#161616' }}>ISITAI_API_KEY</code> server-side to raise rate limits for trusted callers.</P>
 
       <H2>POST /api/detect</H2>
-      <P><strong style={{ color: '#f4f4f5' }}>Mode 1 — file upload (multipart):</strong></P>
+      <P><strong>Mode 1 — file upload (multipart):</strong></P>
       <code style={code}>{`curl -X POST https://isitai-gilt.vercel.app/api/detect \\
   -F "image=@photo.jpg"`}</code>
-      <P><strong style={{ color: '#f4f4f5' }}>Mode 2 — URL (JSON):</strong></P>
+      <P><strong>Mode 2 — URL (JSON):</strong></P>
       <code style={code}>{`curl -X POST https://isitai-gilt.vercel.app/api/detect \\
   -H "Content-Type: application/json" \\
   -d '{"url":"https://example.com/photo.jpg"}'`}</code>
-      <P><strong style={{ color: '#f4f4f5' }}>Optional API key header:</strong></P>
+      <P><strong>Optional API key header:</strong></P>
       <code style={code}>{`-H "x-api-key: YOUR_KEY"   # raises per-IP rate limit`}</code>
 
       <H2>Response shape</H2>
@@ -43,7 +43,7 @@ export default function ApiGuide() {
   },
   "cached": false
 }`}</code>
-      <P>Every signal object carries <code style={{ color: '#a78bfa' }}>why</code>: a plain-language explanation of what was flagged and its evidentiary weight.</P>
+      <P>Every signal object carries <code style={{ color: '#161616' }}>why</code>: a plain-language explanation of what was flagged and its evidentiary weight.</P>
 
       <H2>Related endpoints</H2>
       <UL items={[
