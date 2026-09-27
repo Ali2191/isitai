@@ -1,8 +1,11 @@
 // ─── Shared server-side analysis pipeline for isitai ────────────────────────
 // Used by /api/detect (uploads + URLs), /api/video (keyframes) and /api/report.
 // Layers: dimensions → JPEG structure → EXIF/XMP/IPTC/C2PA/SynthID metadata →
-// pixel forensics (FFT/noise/blocks) → PRNU + double-compression → anatomy →
-// region saliency map → self-hosted model worker + HF Inference ensemble.
+// pixel forensics (FFT/noise/blocks) → PRNU + double-compression → generator
+// fingerprint matching → cross-modal temporal consistency (GIF/video) →
+// anatomy → region saliency map → multi-provider model ensemble (HF Inference
+// + Replicate + fal.ai with circuit breakers, fused by weighted rank-average)
+// → Platt calibration + abstain tier learned from real user feedback.
 
 import sharp from 'sharp'
 import * as exifr from 'exifr'
@@ -13,8 +16,12 @@ import { analyzeNoiseAndCompression } from './prnu.js'
 import { analyzeAnatomy } from './anatomy.js'
 import { buildSaliencyMap } from './saliency.js'
 import { analyzeAnimatedGif } from './gifDetect.js'
+import { matchGeneratorFingerprints } from './fingerprints.js'
+import { temporalConsistency } from './temporal.js'
 import { sha256, recordVerdict, getVerdictHistory } from './registry.js'
 import { getActiveCalibration, applyCorrection } from './calibration.js'
+import { callProvider, activeProviders } from './providers.js'
+import { combineModelScores, calibrateScore, shouldAbstain, ABSTAIN_VERDICT } from './fusion.js'
 
 // fft.js uses an INTERLEAVED complex layout: data = [re0, im0, re1, im1, ...]
 // and transform(out, data) with out also interleaved. Helper wraps that.
@@ -563,17 +570,22 @@ async function analyzePixels(buffer) {
   }
 }
 
-// ─── 5. Model ensemble: self-hosted worker + Hugging Face Inference ─────────
+// ─── 5. Model ensemble: worker + multi-provider cloud (HF/Replicate/fal) ────
 // Strong open detectors (CNNDet-style, TruFor/AIDE family) can be self-hosted
 // behind a tiny FastAPI worker (see /worker) on Modal/RunPod/HF Spaces; when
-// MODEL_WORKER_URL is configured it runs FIRST with the highest weight and the
-// HF API acts as fallback — no cold-start rate limits bottlenecking verdicts.
+// MODEL_WORKER_URL is configured it runs FIRST with the highest weight.
+// Cloud calls fan out through lib/providers.js: every model declares a
+// preferred provider (huggingface | replicate | fal) plus fallback providers,
+// each (provider,model) pair guarded by its own timeout + circuit breaker.
+// A model whose primary breaker is OPEN is retried transparently on a
+// fallback. Scores are fused by WEIGHTED RANK-AVERAGE (lib/fusion.js), never
+// by single vote or plain mean.
 
 const DEFAULT_MODELS = [
-  { name: 'umm-maybe/AI-image-detector', weight: 0.25 },
-  { name: 'haywoodsloan/ai-image-detector-deploy', weight: 0.40 },
-  { name: 'umitkaya/deepfake-detector-all-ViT', weight: 0.20 },
-  { name: 'shunk0211/deepfake-detection-multimodal', weight: 0.15 },
+  { name: 'umm-maybe/AI-image-detector', weight: 0.25, provider: 'huggingface', fallbacks: ['replicate'] },
+  { name: 'haywoodsloan/ai-image-detector-deploy', weight: 0.40, provider: 'huggingface', fallbacks: ['replicate', 'fal'] },
+  { name: 'umitkaya/deepfake-detector-all-ViT', weight: 0.20, provider: 'huggingface', fallbacks: ['fal'] },
+  { name: 'shunk0211/deepfake-detection-multimodal', weight: 0.15, provider: 'huggingface', fallbacks: ['replicate'] },
 ]
 
 async function callWorkerModel(sendBuffer, timeoutMs) {
@@ -601,50 +613,18 @@ async function callWorkerModel(sendBuffer, timeoutMs) {
       aiScore: Math.round(j.aiScore),
       rawLabels: j.labels || [{ label: 'AI-generated', score: Math.round(j.aiScore) }],
       source: 'worker',
+      provider: 'worker',
     }
   } finally {
     clearTimeout(t)
   }
 }
 
-async function callHfModel(model, key, sendBuffer, mimeType, timeoutMs) {
-  const res = await fetch(
-    `https://router.huggingface.co/hf-inference/models/${model.name}`,
-    {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${key}`, 'Content-Type': mimeType },
-      body: sendBuffer,
-    }
-  )
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '')
-    throw new Error(`HTTP ${res.status}: ${errText.slice(0, 120)}`)
-  }
-  const text = await res.text()
-  let data
-  try { data = JSON.parse(text) } catch { throw new Error(`Non-JSON response: ${text.slice(0, 80)}`) }
-  if (data.error) throw new Error(String(data.error).slice(0, 120))
-  if (!Array.isArray(data)) throw new Error('Unexpected response format')
-  const aiEntry = data.find(d => {
-    const label = (d.label || '').toLowerCase()
-    return label.includes('artificial') || label.includes('fake') || label.includes('ai') ||
-      label === 'ai-generated' || label === 'generated' || label === 'deepfake' || label === 'positive'
-  })
-  if (!aiEntry) throw new Error(`No AI label in: ${data.map(d => d.label).join(', ')}`)
-  return {
-    name: model.name,
-    shortName: model.name.split('/')[1],
-    weight: model.weight,
-    aiScore: Math.round(aiEntry.score * 100),
-    rawLabels: data.map(d => ({ label: d.label, score: Math.round(d.score * 100) })),
-  }
-}
-
 async function runModels(sendBuffer, mimeType) {
-  const key = process.env.HUGGINGFACE_API_KEY
   const timeoutMs = Number(process.env.MODEL_TIMEOUT_MS || 12000)
+  const providers = activeProviders()
 
-  // ── Self-hosted worker first (strongest model, no HF cold starts) ──
+  // ── Self-hosted worker first (strongest model, no cold starts) ──
   let workerResult = null, workerFailed = null
   if (process.env.MODEL_WORKER_URL) {
     try {
@@ -654,11 +634,11 @@ async function runModels(sendBuffer, mimeType) {
     }
   }
 
-  if (!key && !workerResult) {
+  if (!providers.length && !workerResult) {
     return {
-      models: [], failed: [workerFailed || 'HUGGINGFACE_API_KEY not configured'],
+      models: [], failed: [workerFailed || 'no model providers configured (HUGGINGFACE_API_KEY / REPLICATE_API_TOKEN / FAL_KEY)'],
       degraded: true, degradedReason: 'ML models unavailable (server misconfigured)',
-      combined: null, disagreement: false, spread: 0, confidence: 'very_low',
+      combined: null, disagreement: false, spread: 0, confidence: 'very_low', fusionMethod: 'none',
     }
   }
   const enabled = (process.env.DETECT_MODELS || '')
@@ -667,54 +647,48 @@ async function runModels(sendBuffer, mimeType) {
     ? DEFAULT_MODELS.filter(m => enabled.some(e => m.name.includes(e)))
     : DEFAULT_MODELS
 
-  const results = key
-    ? await Promise.allSettled(
-        models.map(m => withTimeout(callHfModel(m, key, sendBuffer, mimeType, timeoutMs), timeoutMs, m.name))
-      )
+  // Fan out across providers; each call handles its own breaker + fallback.
+  const results = providers.length
+    ? await Promise.allSettled(models.map(m => callProvider(m, sendBuffer, mimeType, timeoutMs).then(r => ({
+        name: m.name,
+        shortName: m.name.split('/')[1],
+        weight: m.weight,
+        aiScore: r.aiScore,
+        rawLabels: r.rawLabels,
+        provider: r.provider,
+      }))))
     : []
   const successful = results.filter(r => r.status === 'fulfilled').map(r => r.value)
-  const failed = results.filter(r => r.status === 'rejected').map(r => String(r.reason?.message || r.reason).slice(0, 140))
+  const failed = results.filter(r => r.status === 'rejected').map(r => String(r.reason?.message || r.reason).slice(0, 160))
   if (workerFailed) failed.push(workerFailed)
   if (workerResult) successful.unshift(workerResult)
 
   if (successful.length === 0) {
     return {
       models: [], failed,
-      degraded: true, degradedReason: 'All ML models failed or cold-started',
-      combined: null, disagreement: false, spread: 0, confidence: 'very_low',
+      degraded: true, degradedReason: 'All ML models failed, cold-started or had open circuit breakers',
+      combined: null, disagreement: false, spread: 0, confidence: 'very_low', fusionMethod: 'none',
     }
   }
 
-  const scores = successful.map(m => m.aiScore)
-  const spread = successful.length > 1 ? Math.max(...scores) - Math.min(...scores) : 0
+  // Weighted rank-average fusion (robust to one wildly-off model).
+  const { combined, method, spread } = combineModelScores(successful)
   const disagreement = spread > 25
-  let adjusted = successful
-  if (disagreement && spread > 35 && successful.length > 1) {
-    adjusted = successful.map(m => ({
-      ...m,
-      effectiveWeight: m.name.includes('haywoodsloan') ? 0.75 : 0.25,
-      weightAdjusted: m.name.includes('haywoodsloan'),
-    }))
-  } else {
-    adjusted = successful.map(m => ({ ...m, effectiveWeight: m.weight, weightAdjusted: false }))
-  }
-  const totalWeight = adjusted.reduce((s, m) => s + m.effectiveWeight, 0)
-  const combined = Math.round(adjusted.reduce((s, m) => s + m.aiScore * (m.effectiveWeight / totalWeight), 0))
-  const variance = adjusted.reduce((s, m) => s + Math.pow(m.aiScore - combined, 2), 0) / adjusted.length
+  const variance = successful.reduce((s, m) => s + Math.pow(m.aiScore - combined, 2), 0) / successful.length
   const stdDev = Math.sqrt(variance)
-  const coveragePenalty = successful.length < models.length ? 1 : 0
-  const confidence = (stdDev < 8 && !coveragePenalty) ? 'high' : stdDev < 22 ? 'medium' : 'low'
+  const coverageShort = successful.length < models.length ? 1 : 0
+  const confidence = (stdDev < 8 && !coverageShort && method === 'rank-average') ? 'high' : stdDev < 22 ? 'medium' : 'low'
 
   return {
-    models: adjusted.map(m => ({ name: m.name, shortName: m.shortName, weight: m.effectiveWeight, weightAdjusted: m.weightAdjusted, aiScore: m.aiScore })),
+    models: successful.map(m => ({ name: m.name, shortName: m.shortName, weight: m.weight, aiScore: m.aiScore, provider: m.provider || 'worker' })),
     failed, degraded: successful.length < models.length,
-    degradedReason: successful.length < models.length ? `${models.length - successful.length} model(s) unavailable — weighted across the rest` : null,
-    combined, disagreement, spread, confidence,
+    degradedReason: successful.length < models.length ? `${models.length - successful.length} model(s) unavailable (timeouts/breakers) — rank-averaged across the rest` : null,
+    combined, disagreement, spread, confidence, fusionMethod: method,
   }
 }
 
 // ─── Fusion + uncertainty ────────────────────────────────────────────────────
-export function fuse(modelCombined, exif, dim, jpeg, pix, metaSuspicious, noise, anatomy) {
+export function fuse(modelCombined, exif, dim, jpeg, pix, metaSuspicious, noise, anatomy, fingerprints, temporal) {
   const ew = exif?.exifWeight || 0
   const dw = dim?.confidence === 'high' ? 0.12 : dim?.confidence === 'medium' ? 0.06 : 0
   const pw = pix?.confidence === 'high' ? 0.10 : pix?.confidence === 'medium' ? 0.05 : 0
@@ -722,13 +696,22 @@ export function fuse(modelCombined, exif, dim, jpeg, pix, metaSuspicious, noise,
   // PRNU/noise layer: signed −40..+45 → map to 0..100 with modest weight
   const nw = noise?.confidence === 'high' ? 0.10 : noise?.confidence === 'medium' ? 0.06 : 0.02
   const aw = anatomy?.suspicious ? 0.07 : 0
-  const mw = modelCombined == null ? 0 : Math.max(0.45, 1 - ew - dw - pw - jw - nw - aw)
-  const total = mw + ew + dw + pw + jw + nw + aw
+  // Generator fingerprint layer (offline spectral signature DB): only when it
+  // actually matched something or explicitly cleared the image.
+  const fw = fingerprints && typeof fingerprints.score === 'number'
+    ? (fingerprints.confidence === 'medium' ? 0.09 : fingerprints.confidence === 'low' ? 0.06 : 0.02)
+    : 0
+  // Cross-modal temporal consistency: present only for animated inputs.
+  const tw = temporal && typeof temporal.score === 'number' ? 0.10 : 0
+  const mw = modelCombined == null ? 0 : Math.max(0.45, 1 - ew - dw - pw - jw - nw - aw - fw - tw)
+  const total = mw + ew + dw + pw + jw + nw + aw + fw + tw
   if (total === 0) return 50
   // Map JPEG-structure score (-20..+25) onto 0..100 on a gentle slope
   const jpegNorm = clamp(((jpeg?.score || 0) + 20) * 2.2, 0, 100)
   const noiseNorm = clamp(((noise?.score || 0) + 40) / 85 * 100, 0, 100)
   const anatomyNorm = anatomy?.suspicious ? 82 : 30
+  const fpNorm = clamp(50 + (fingerprints?.score || 0) * 0.9, 0, 100)
+  const tmpNorm = clamp(50 + (temporal?.score || 0) * 1.5, 0, 100)
   const parts =
     (modelCombined ?? 50) * mw +
     (exif?.aiScore || 0) * ew +
@@ -736,7 +719,9 @@ export function fuse(modelCombined, exif, dim, jpeg, pix, metaSuspicious, noise,
     (pix?.score || 0) * pw +
     jpegNorm * jw +
     noiseNorm * nw +
-    anatomyNorm * aw
+    anatomyNorm * aw +
+    fpNorm * fw +
+    tmpNorm * tw
   let score = Math.round(parts / total)
   // Definitive metadata evidence dominates
   if (metaSuspicious) score = Math.max(score, 92)
@@ -810,12 +795,13 @@ export async function analyzeImage(buffer, mimeType = 'image/jpeg') {
   const exif = await analyzeMetadata(buffer, format)
   const pix = await analyzePixels(buffer)
 
-  // New forensic layers: PRNU + double-compression, anatomy, saliency map.
-  // All share one square 256×256 decode to keep cost bounded.
-  let noise = null, anatomy = null, saliency = null
+  // New forensic layers: PRNU + double-compression, generator fingerprints,
+  // anatomy, saliency map. All share one square 256×256 decode to keep cost bounded.
+  let noise = null, anatomy = null, saliency = null, fingerprints = null
   try {
     const { gray, data, size: S, channels } = await decodeSquareGray(buffer, 256)
     noise = analyzeNoiseAndCompression(gray, S, buffer)
+    fingerprints = matchGeneratorFingerprints(gray, S)
     anatomy = analyzeAnatomy(gray, S, data, S, S, channels)
     saliency = buildSaliencyMap(gray, S, noise.maps)
   } catch { /* layers are additive; pipeline survives without them */ }
@@ -824,15 +810,28 @@ export async function analyzeImage(buffer, mimeType = 'image/jpeg') {
 
   const metaSuspicious = !!(exif.verdict === 'ai_tool' || exif.synthId || exif.gligen)
   const modelsAvailable = models.models.length > 0
-  let score = fuse(models.combined, exif, dim, jpeg, pix, metaSuspicious, noise, anatomy)
+  let score = fuse(models.combined, exif, dim, jpeg, pix, metaSuspicious, noise, anatomy, fingerprints, null)
 
-  // Confidence calibration learned from user-confirmed ground truth (weekly job)
+  // Confidence calibration learned from user-confirmed ground truth (weekly
+  // job): bucket corrections first, then Platt scaling of the raw fused score
+  // onto empirical P(AI) when ≥40 labelled feedback samples exist.
   const cal = await getActiveCalibration()
   const preCalScore = score
   score = applyCorrection(score, cal)
+  const { prob, calibrated } = calibrateScore(score, cal?.platt)
 
   const band = uncertaintyBand(score, models.confidence, [exif.confidence, dim.confidence, pix.confidence, noise?.confidence], models.degraded, modelsAvailable)
-  const verdict = computeVerdict(score, band, models.degraded, modelsAvailable)
+  let verdict = computeVerdict(score, band, models.degraded, modelsAvailable)
+
+  // ── Abstain tier: never force a binary call on ambiguous media ──
+  const abstain = cal?.abstain || { low: 0.32, high: 0.55 }
+  const abstaining = shouldAbstain(prob, {
+    abstain,
+    spread: models.spread,
+    modelCount: models.models.length,
+    degraded: models.degraded || !modelsAvailable,
+  }) && !(metaSuspicious || (fingerprints?.matches?.length && fingerprints.matches[0].strength > 0.5))
+  if (abstaining) verdict = ABSTAIN_VERDICT
 
   // Annotate every signal with a plain-language explanation
   const annotate = arr => (arr || []).map(s => ({ ...s, why: explainSignal(s.label) }))
@@ -842,6 +841,7 @@ export async function analyzeImage(buffer, mimeType = 'image/jpeg') {
       degraded: models.degraded,
       reason: models.degradedReason,
       combined: models.combined,
+      fusion: models.fusionMethod || 'weighted',
       results: models.models,
       failed: models.failed,
       disagreement: models.disagreement,
@@ -853,6 +853,7 @@ export async function analyzeImage(buffer, mimeType = 'image/jpeg') {
     structure: { ...jpeg, signals: annotate(jpeg.signals) },
     pixels: { ...pix, signals: annotate(pix.signals) },
     noise: noise ? { ...noise, signals: annotate(noise.signals), maps: undefined } : undefined,
+    fingerprints: fingerprints ? { ...fingerprints, signals: annotate(fingerprints.signals) } : undefined,
     anatomy: anatomy ? { ...anatomy, boxes: anatomy.boxes } : undefined,
   }
 
@@ -864,13 +865,16 @@ export async function analyzeImage(buffer, mimeType = 'image/jpeg') {
     id: hash.slice(0, 16),
     sha256: hash,
     score,
+    probability: Math.round(prob * 100),
+    calibrated,
+    abstained: abstaining,
     band,
     verdict,
     confidence: models.degraded ? 'low' : models.confidence,
     degraded: models.degraded,
     degradedReason: models.degradedReason,
     combined: models.combined,
-    calibration: preCalScore !== score ? { applied: true, before: preCalScore, after: score } : { applied: false },
+    calibration: preCalScore !== score ? { applied: true, before: preCalScore, after: score, platt: calibrated } : { applied: false, platt: calibrated },
     imageDimensions,
     layers,
     saliency: saliency || undefined,
@@ -891,16 +895,35 @@ async function analyzeAnimatedGifFromBuffer(buffer, hash) {
   const dim = analyzeDimensions(gif.widthHint || 0, gif.heightHint || 0)
   void dim
   const exif = await analyzeMetadata(buffer, 'image/gif').catch(() => ({ signals: [], confidence: 'none', aiScore: 0, exifWeight: 0 }))
-  const score = clamp(Math.round((gif.score ?? 50) * 0.82 + (exif.aiScore || 0) * 0.18), 1, 99)
+  // Fuse the per-frame spatial verdict with the cross-modal consistency layer
+  // (lib/temporal.js): flicker/outliers push toward AI, stability pulls back.
+  const consistency = gif.consistency || null
+  const tmpNorm = consistency && typeof consistency.score === 'number'
+    ? clamp(50 + consistency.score * 1.5, 0, 100) : null
+  const raw = tmpNorm != null
+    ? Math.round(gif.score * 0.68 + (exif.aiScore || 0) * 0.14 + tmpNorm * 0.18)
+    : Math.round((gif.score ?? 50) * 0.82 + (exif.aiScore || 0) * 0.18)
+  let score = clamp(raw, 1, 99)
+  const cal = await getActiveCalibration().catch(() => null)
+  const preCalScore = score
+  score = applyCorrection(score, cal)
+  const { prob, calibrated } = calibrateScore(score, cal?.platt)
   const band = uncertaintyBand(score, 'low', ['low'], true, false)
-  const verdict = computeVerdict(score, band, true, false)
+  let verdict = computeVerdict(score, band, true, false)
+  const abstain = cal?.abstain || { low: 0.32, high: 0.55 }
+  const abstaining = shouldAbstain(prob, { abstain, spread: 0, modelCount: 0, degraded: true }) && !(exif.verdict === 'ai_tool' || exif.synthId)
+  if (abstaining) verdict = ABSTAIN_VERDICT
   const annotate = arr => (arr || []).map(s => ({ ...s, why: explainSignal(s.label) }))
   return {
     id: hash.slice(0, 16),
     sha256: hash,
     score,
+    probability: Math.round(prob * 100),
+    calibrated,
+    abstained: abstaining,
     band,
     verdict,
+    calibration: preCalScore !== score ? { applied: true, before: preCalScore, after: score, platt: calibrated } : { applied: false, platt: calibrated },
     confidence: 'low',
     degraded: true,
     degradedReason: `Animated GIF: ${gif.framesSampled || 0}/${gif.totalFrames || '?'} keyframes analyzed with temporal forensics (ML ensemble runs on still frames only)`,
@@ -913,7 +936,8 @@ async function analyzeAnimatedGifFromBuffer(buffer, hash) {
       metadata: { ...exif, signals: annotate(exif.signals) },
       dimensions: { score: 50, signals: [] },
       structure: { score: 50, signals: [] },
-      pixels: { ...gif, signals: annotate(gif.signals) },
+      pixels: { ...gif, signals: annotate(gif.signals), consistency: undefined },
+      temporal: consistency ? { ...consistency, signals: annotate(consistency.signals) } : undefined,
     },
     cached: false,
     analyzedAt: Date.now(),

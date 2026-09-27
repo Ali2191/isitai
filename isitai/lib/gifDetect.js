@@ -8,6 +8,7 @@
 
 import pkg from 'gifwrap'
 import { analyzeFramePixels } from './frameStats.js'
+import { temporalConsistency } from './temporal.js'
 
 // gifwrap is CommonJS; its class is exported as `Gif` (capital I lowercase f).
 const GifCodec = pkg.GifCodec
@@ -160,6 +161,10 @@ export async function analyzeAnimatedGif(buffer) {
       textureSpread: +varSpread.toFixed(4),
       meanLumDrift: +(means[means.length - 1] - means[0]).toFixed(4),
     },
+    // Cross-modal consistency layer (lib/temporal.js): consumes the same
+    // per-frame scores and turns flicker/dispersion/outliers into a fused
+    // signed delta + explainable signals for the main pipeline.
+    consistency: temporalConsistency(perFrame.map(p => ({ score: p.score, noise: p.noise }))),
   }
 }
 
